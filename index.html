@@ -44,15 +44,16 @@
         body {
             font-family: 'Noto Sans TC', sans-serif;
             -webkit-font-smoothing: antialiased;
-            overscroll-behavior-y: none; /* 防止 iOS 下拉重整 */
-            overflow: hidden; /* 防止整體頁面捲動 */
+            overscroll-behavior-y: none;
         }
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         
-        /* iPhone Safe Area Fixes */
+        /* iPhone Safe Area Fixes - 加大頂部距離 */
         .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
-        .pt-safe { padding-top: max(1rem, env(safe-area-inset-top)); }
+        .pt-safe { 
+            padding-top: calc(env(safe-area-inset-top) + 16px); /* 增加額外 16px 緩衝 */
+        }
         
         /* 類別按鈕選中樣式 */
         .btn-type-active { background-color: #10b981; color: white; border-color: #10b981; }
@@ -167,10 +168,14 @@
             if (!dateStr) return false;
             const expiry = new Date(dateStr);
             const today = new Date();
+            // 只比較日期部分
             expiry.setHours(0,0,0,0);
             today.setHours(0,0,0,0);
+            
             const diffTime = expiry - today;
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            // 少於等於 30 天 (包含過期) 回傳 true
             return diffDays <= 30;
         };
 
@@ -187,6 +192,7 @@
             if (r.type === 'tolls') {
                 return r.vendor || '過路費';
             }
+            // 保險、充電或其他，預設顯示廠商，若無則顯示類別名稱
             return r.vendor || typeLabel;
         };
 
@@ -225,6 +231,7 @@
         const MultiSelect = React.memo(({ label, value, onChange, options, placeholder = "請選擇" }) => {
             const [isOpen, setIsOpen] = useState(false);
             const wrapperRef = useRef(null);
+            
             const selectedItems = useMemo(() => Array.isArray(value) ? value : [], [value]);
             const normalizedOptions = useMemo(() => options.map(o => (typeof o === 'string' ? { label: o, value: o } : o)), [options]);
 
