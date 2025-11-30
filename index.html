@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>養車小幫手 (React版)</title>
+    
+    <!-- 1. Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: {
+                            bg: '#111827',
+                            card: '#1f2937',
+                            text: '#f3f4f6',
+                            border: '#374151',
+                            input: '#374151'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- 2. React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    
+    <!-- 3. Babel -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- 4. Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+        body {
+            font-family: 'Noto Sans TC', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            overscroll-behavior-y: none;
+        }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+        .pt-safe { padding-top: max(1rem, env(safe-area-inset-top)); }
+        
+        /* 類別按鈕選中樣式 */
+        .btn-type-active { background-color: #10b981; color: white; border-color: #10b981; }
+        .btn-type-inactive { background-color: white; color: #6b7280; border-color: #e5e7eb; }
+        .dark .btn-type-inactive { background-color: #1f2937; color: #9ca3af; border-color: #374151; }
+        
+        /* 頁面切換動畫 */
+        .page-enter { animation: slideIn 0.3s ease-out forwards; }
+        @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100 transition-colors duration-200">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+        // --- 錯誤邊界元件 ---
+        class ErrorBoundary extends React.Component {
+            constructor(props) {
+                super(props);
+                this.state = { hasError: false, error: null };
+            }
+            static getDerivedStateFromError(error) { return { hasError: true, error }; }
+            componentDidCatch(error, errorInfo) { console.error("React Error:", error, errorInfo); }
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-red-50 text-red-900 dark:bg-red-900/20 dark:text-red-200">
+                            <div className="bg-white p-6 rounded-2xl shadow-xl max-w-sm w-full border border-red-100 dark:bg-gray-800 dark:border-red-900">
+                                <h2 className="text-xl font-bold mb-2 flex items-center gap-2">⚠️ 發生錯誤</h2>
+                                <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">應用程式遇到非預期狀況。</p>
+                                <button onClick={() => window.location.reload()} className="w-full bg-red-600 text-white font-bold py-3 rounded-xl hover:bg-red-700 transition-colors">重新整理頁面</button>
+                                <div className="mt-4 p-3 bg-gray-100 dark:bg-gray-900 rounded-lg text-xs font-mono overflow-auto max-h-32 text-gray-700 dark:text-gray-300">{this.state.error && this.state.error.toString()}</div>
+                            </div>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
+        // --- Icon 元件 (Memoized) ---
+        const Icon = React.memo(({ name, size = 20, className = "" }) => {
+            const ref = useRef(null);
+            useEffect(() => {
+                if (window.lucide && window.lucide.icons) {
+                    const iconName = name.split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
+                    const iconDef = window.lucide.icons[iconName];
+                    if (iconDef && ref.current) {
+                        try {
+                            const svgElement = window.lucide.createElement(iconDef);
+                            svgElement.setAttribute('width', size);
+                            svgElement.setAttribute('height', size);
+                            if (className) svgElement.setAttribute('class', className);
+                            ref.current.innerHTML = '';
+                            ref.current.appendChild(svgElement);
+                        } catch (e) {}
+                    }
+                }
+            }, [name, size, className]);
+            return <span ref={ref} className="inline-flex items-center justify-center" style={{ width: size, height: size }} />;
+        });
+
+        // --- 資料與常數 ---
+        const RECORD_TYPES = [
+            { id: 'charging', label: '充電', icon: 'zap' },
+            { id: 'parking', label: '停車', icon: 'circle-parking' },
+            { id: 'tolls', label: '過路費', icon: 'ticket' },
+            { id: 'maintenance', label: '保養', icon: 'wrench' },
+            { id: 'insurance', label: '保險', icon: 'shield' },
+            { id: 'other', label: '其他', icon: 'more-horizontal' }
+        ];
+
+        // --- 輔助函式 ---
+        const formatDateTimeDisplay = (dateStr) => {
+            if (!dateStr) return '';
+            try {
+                const date = new Date(dateStr);
+                const m = (date.getMonth() + 1).toString().padStart(2, '0');
+                const d = date.getDate().toString().padStart(2, '0');
+                const hasTime = dateStr.includes('T');
+                if (hasTime) {
+                    const h = date.getHours().toString().padStart(2, '0');
+                    const min = date.getMinutes().toString().padStart(2, '0');
+                    return `${m}/${d} ${h}:${min}`;
+                }
+                return `${m}/${d}`;
+            } catch (e) { return dateStr; }
+        };
+
+        const getCurrentDateTimeString = () => {
+            const now = new Date();
+            const offset = now.getTimezoneOffset() * 60000;
+            return new Date(now.getTime() - offset).toISOString().slice(0, 16);
+        };
+
+        const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
+
+        const getVehicleAge = (dateStr) => {
+            if (!dateStr) return '';
+            const start = new Date(dateStr);
+            const now = new Date();
+            let years = now.getFullYear() - start.getFullYear();
+            let months = now.getMonth() - start.getMonth();
+            if (months < 0) { years--; months += 12; }
+            if (years < 0) return '未來車';
+            return `${years}年${months}個月`;
+        };
+
+        // --- 共用 UI 元件 ---
+        const SuggestionInput = React.memo(({ label, value, onChange, options, placeholder, icon }) => {
+            const [show, setShow] = useState(false);
+            const wrapperRef = useRef(null);
+            const filteredOptions = useMemo(() => {
+                if (!value) return options;
+                return options.filter(v => v.toLowerCase().includes(value.toLowerCase()));
+            }, [value, options]);
+            useEffect(() => {
+                const handleClick = (e) => { if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setShow(false); };
+                document.addEventListener('click', handleClick);
+                return () => document.removeEventListener('click', handleClick);
+            }, []);
+            return (
+                <div className="relative" ref={wrapperRef}>
+                    <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">{label}</label>
+                    <div className="relative">
+                        <input type="text" className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all pl-10 dark:text-white"
+                            placeholder={placeholder} value={value} onChange={(e) => { onChange(e.target.value); setShow(true); }} onFocus={() => setShow(true)} />
+                        <div className="absolute left-3 top-3.5 text-gray-400"><Icon name={icon} size={16} /></div>
+                    </div>
+                    {show && filteredOptions.length > 0 && (
+                        <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl shadow-xl max-h-40 overflow-y-auto">
+                            {filteredOptions.map(s => (
+                                <div key={s} className="px-4 py-3 hover:bg-emerald-50 dark:hover:bg-gray-700 text-sm cursor-pointer border-b border-gray-50 dark:border-gray-700 last:border-0 dark:text-gray-200" onClick={() => { onChange(s); setShow(false); }}>{s}</div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        });
+
+        const MultiSelect = React.memo(({ label, value, onChange, options, placeholder = "請選擇" }) => {
+            const [isOpen, setIsOpen] = useState(false);
+            const wrapperRef = useRef(null);
+            
+            const selectedItems = useMemo(() => Array.isArray(value) ? value : [], [value]);
+            const normalizedOptions = useMemo(() => options.map(o => (typeof o === 'string' ? { label: o, value: o } : o)), [options]);
+
+            useEffect(() => {
+                const handleClick = (e) => { if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setIsOpen(false); };
+                document.addEventListener('click', handleClick);
+                return () => document.removeEventListener('click', handleClick);
+            }, []);
+
+            const toggleItem = (itemValue) => {
+                let newItems;
+                const isAll = itemValue === '所有人';
+                if (isAll) newItems = ['所有人'];
+                else {
+                    const withoutAll = selectedItems.filter(i => i !== '所有人');
+                    if (selectedItems.includes(itemValue)) newItems = withoutAll.filter(i => i !== itemValue);
+                    else newItems = [...withoutAll, itemValue];
+                    if (newItems.length === 0 && normalizedOptions.some(o=>o.value === '所有人')) newItems = ['所有人'];
+                }
+                onChange(newItems);
+            };
+
+            return (
+                <div className="relative" ref={wrapperRef}>
+                    <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">{label}</label>
+                    <div className="w-full p-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl min-h-[46px] flex flex-wrap gap-2 items-center cursor-pointer hover:border-emerald-300 transition-colors"
+                        onClick={() => setIsOpen(!isOpen)}>
+                        {selectedItems.length === 0 && <span className="text-gray-400 text-sm px-1">{placeholder}</span>}
+                        {selectedItems.map(val => {
+                            const opt = normalizedOptions.find(o => o.value === val);
+                            const labelText = opt ? opt.label : val;
+                            return (
+                                <span key={val} className="bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 px-2 py-1 rounded-lg text-xs font-bold flex items-center gap-1">
+                                    {labelText} <span className="cursor-pointer hover:text-emerald-900 dark:hover:text-emerald-100 px-0.5" onClick={(e) => { e.stopPropagation(); toggleItem(val); }}>×</span>
+                                </span>
+                            );
+                        })}
+                        <div className="ml-auto text-gray-400 px-2"><Icon name="chevron-down" size={16} /></div>
+                    </div>
+                    {isOpen && (
+                        <div className="absolute z-10 w-full mt-1 bg-white dark:bg-gray-800 border border-gray-100 dark:border-gray-700 rounded-xl shadow-xl max-h-60 overflow-y-auto p-2">
+                            {normalizedOptions.map(option => (
+                                <div key={option.value} className={`px-3 py-2.5 rounded-lg text-sm cursor-pointer flex justify-between items-center mb-1 ${selectedItems.includes(option.value) ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 font-bold' : 'hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300'}`}
+                                    onClick={() => toggleItem(option.value)}>
+                                    {option.label} {selectedItems.includes(option.value) && <Icon name="check" size={14} />}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        });
+
+        // --- 表單元件 ---
+        const RecordForm = React.memo(({ onSave, getVendorOptions, userOptions, currentVehicle, editingRecord, onCancelEdit }) => {
+            const [formData, setFormData] = useState({ 
+                type: 'charging',
+                date: getCurrentDateTimeString(), 
+                vendor: '', 
+                cost: '', 
+                kwh: '',
+                users: ['所有人'], 
+                note: '',
+                mileage: '',
+                expiryDate: ''
+            });
+
+            // 監聽編輯狀態
+            useEffect(() => {
+                if (editingRecord) {
+                    setFormData({
+                        type: editingRecord.type,
+                        date: editingRecord.date,
+                        vendor: editingRecord.vendor || '',
+                        cost: editingRecord.cost,
+                        kwh: editingRecord.kwh || '',
+                        users: editingRecord.user ? editingRecord.user.split(',') : ['所有人'],
+                        note: editingRecord.note || '',
+                        mileage: editingRecord.mileage || '',
+                        expiryDate: editingRecord.expiryDate || ''
+                    });
+                } else {
+                    // 重置為預設 (非編輯狀態)
+                    setFormData(prev => ({
+                        type: prev.type, // 保留上次選擇的類型
+                        date: getCurrentDateTimeString(),
+                        vendor: '',
+                        cost: '',
+                        kwh: '',
+                        users: ['所有人'],
+                        note: '',
+                        mileage: '',
+                        expiryDate: ''
+                    }));
+                }
+            }, [editingRecord]);
+
+            const currentVendorOptions = useMemo(() => getVendorOptions(formData.type), [formData.type, getVendorOptions]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                onSave({
+                    type: formData.type,
+                    date: formData.date,
+                    vendor: (formData.type === 'parking' || formData.type === 'tolls') ? '' : formData.vendor,
+                    cost: Number(formData.cost),
+                    kwh: formData.type === 'charging' ? (Number(formData.kwh) || 0) : 0,
+                    user: formData.users.join(','), 
+                    note: formData.note,
+                    mileage: (formData.type === 'charging' || formData.type === 'maintenance') ? formData.mileage : '',
+                    expiryDate: formData.type === 'insurance' ? formData.expiryDate : ''
+                });
+                if (!editingRecord) {
+                    setFormData(prev => ({ ...prev, vendor: '', cost: '', kwh: '', note: '', mileage: '', expiryDate: '' }));
+                }
+            };
+
+            return (
+                <form onSubmit={handleSubmit} className={`bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border ${editingRecord ? 'border-amber-400 dark:border-amber-600 ring-2 ring-amber-100 dark:ring-amber-900/30' : 'border-emerald-100/50 dark:border-gray-700'}`}>
+                    {editingRecord && (
+                        <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-100 dark:border-gray-700">
+                            <span className="text-amber-500 font-bold text-sm flex items-center gap-1"><Icon name="edit-2" size={14}/> 編輯模式</span>
+                            <button type="button" onClick={onCancelEdit} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"><Icon name="x" size={18}/></button>
+                        </div>
+                    )}
+                    
+                    <div className="flex gap-2 overflow-x-auto hide-scrollbar mb-4">
+                        {RECORD_TYPES.map(t => (
+                            <button 
+                                key={t.id} 
+                                type="button" 
+                                onClick={() => setFormData({...formData, type: t.id})}
+                                className={`flex-shrink-0 px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-1.5 ${formData.type === t.id ? 'btn-type-active' : 'btn-type-inactive'}`}
+                            >
+                                <Icon name={t.icon} size={14} /> {t.label}
+                            </button>
+                        ))}
+                    </div>
+
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">日期時間</label>
+                            <input type="datetime-local" required className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white" 
+                                value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
+                        </div>
+                        {['charging', 'maintenance', 'insurance', 'other'].includes(formData.type) && (
+                            <SuggestionInput 
+                                label={formData.type === 'insurance' ? "保險公司" : formData.type === 'maintenance' ? "保養廠/地點" : formData.type === 'charging' ? "充電廠商" : "地點/廠商"} 
+                                value={formData.vendor} onChange={v => setFormData({...formData, vendor: v})} 
+                                options={currentVendorOptions} 
+                                placeholder="輸入名稱..." icon="map-pin" />
+                        )}
+                        {formData.type === 'insurance' && (
+                            <div>
+                                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">保險到期日</label>
+                                <input type="date" className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white" 
+                                    value={formData.expiryDate} onChange={e => setFormData({...formData, expiryDate: e.target.value})} />
+                            </div>
+                        )}
+                        <div className="flex gap-4">
+                            <div className="flex-1"><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">費用 ($)</label><input type="number" required min="0" className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white" value={formData.cost} onChange={e => setFormData({...formData, cost: e.target.value})} /></div>
+                            {formData.type === 'charging' && (
+                                <div className="flex-1"><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">電量 (kWh)</label><input type="number" step="0.01" min="0" className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white" value={formData.kwh} onChange={e => setFormData({...formData, kwh: e.target.value})} /></div>
+                            )}
+                            {(formData.type === 'charging' || formData.type === 'maintenance') && (
+                                <div className="flex-1"><label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">目前里程 (選填)</label><input type="number" min="0" placeholder={currentVehicle?.currentMileage || '0'} className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white" value={formData.mileage} onChange={e => setFormData({...formData, mileage: e.target.value})} /></div>
+                            )}
+                        </div>
+                        <div className="flex gap-4">
+                            <div className="flex-1">
+                                <MultiSelect label="使用者 (多選)" value={formData.users} onChange={v => setFormData({...formData, users: v})} options={userOptions} />
+                            </div>
+                            <div className="flex-[1.5]">
+                                <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">備註 (選填)</label>
+                                <input type="text" placeholder="例如: 出遊" className="w-full p-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white" value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})} />
+                            </div>
+                        </div>
+                        <div className="flex gap-3">
+                            <button type="submit" className={`w-full text-white font-bold py-3.5 rounded-xl shadow-lg active:scale-[0.98] transition-all flex justify-center items-center gap-2 ${editingRecord ? 'bg-amber-500 hover:bg-amber-600 shadow-amber-200 dark:shadow-none' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200 dark:shadow-none'}`}>
+                                <Icon name={editingRecord ? "refresh-cw" : "save"} size={18} /> {editingRecord ? '更新紀錄' : '儲存紀錄'}
+                            </button>
+                            {editingRecord && (
+                                <button type="button" onClick={onCancelEdit} className="w-1/3 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 font-bold py-3.5 rounded-xl transition-all">取消</button>
+                            )}
+                        </div>
+                    </div>
+                </form>
+            );
+        });
+
+        // --- 列表元件 ---
+        const RecordList = React.memo(({ records, onDelete, onEdit }) => {
+            return (
+                <div className="space-y-3">
+                    {records.map(r => {
+                        const typeObj = RECORD_TYPES.find(t => t.id === r.type);
+                        return (
+                        <div key={r.id} className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center group relative overflow-hidden">
+                            <div className={`absolute left-0 top-0 bottom-0 w-1 ${r.type==='charging'?'bg-emerald-500':r.type==='parking'?'bg-amber-500':r.type==='tolls'?'bg-purple-500':r.type==='maintenance'?'bg-blue-500':r.type==='insurance'?'bg-pink-500':'bg-gray-400'}`}></div>
+                            <div className="flex-1 min-w-0 pl-3">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-[10px] font-bold bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded-md flex items-center gap-1">
+                                        {formatDateTimeDisplay(r.date)}
+                                    </span>
+                                    <span className="font-semibold text-gray-800 dark:text-gray-100 truncate">{r.vendor || typeObj?.label || '未填寫'}</span>
+                                    <span className="text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 px-1 rounded">{typeObj?.label}</span>
+                                </div>
+                                <div className="text-xs text-gray-500 dark:text-gray-400 flex gap-3 items-center flex-wrap">
+                                    {r.type === 'charging' && <span>⚡ {r.kwh} kWh</span>}
+                                    {r.user && r.user !== '所有人' && <span className="text-blue-500 dark:text-blue-400">{r.user}</span>}
+                                    {r.mileage && <span>🚗 {r.mileage}km</span>}
+                                    {r.expiryDate && <span>📅 到期: {r.expiryDate}</span>}
+                                    {r.note && <span className="text-gray-400 dark:text-gray-500 flex items-center gap-0.5"><Icon name="sticky-note" size={10} /> {r.note}</span>}
+                                </div>
+                            </div>
+                            <div className="text-right pl-2 flex flex-col items-end">
+                                <div className="text-lg font-bold text-gray-800 dark:text-white mb-1">${r.cost}</div>
+                                <div className="flex gap-1">
+                                    <button onClick={() => onEdit(r)} className="text-blue-400 hover:text-blue-600 dark:hover:text-blue-300 p-1"><Icon name="edit-2" size={16} /></button>
+                                    <button onClick={() => onDelete(r.id)} className="text-gray-300 hover:text-red-500 transition-colors p-1"><Icon name="trash-2" size={16} /></button>
+                                </div>
+                            </div>
+                        </div>
+                    )})}
+                </div>
+            );
+        });
+
+        // --- 圖表元件 ---
+        const BarChart = ({ data }) => {
+            if (data.length === 0) return <div className="h-32 flex items-center justify-center text-gray-300">無數據</div>;
+            const max = Math.max(...data.map(d => d.cost)) || 1;
+            
+            return (
+                <div className="flex items-end gap-1 h-48 overflow-x-auto pt-6 px-2 hide-scrollbar">
+                    {data.map((d, i) => (
+                        <div key={d.key} className="flex flex-col items-center min-w-[20px] group relative">
+                            {d.cost > 0 && (
+                                <div className="absolute -top-6 bg-emerald-600 text-white text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 z-index-10">${d.cost}</div>
+                            )}
+                            <div className={`w-3 rounded-t-md transition-all duration-500 ${i===data.length-1 ? 'bg-emerald-500':'bg-emerald-300 dark:bg-emerald-900'}`} 
+                                    style={{ height: `${(d.cost/max)*140}px`, minHeight: d.cost === 0 ? '1px' : '4px', opacity: d.cost === 0 ? 0.3 : 1 }}></div>
+                            <div className="mt-2 text-[9px] text-gray-400 text-center leading-tight whitespace-nowrap transform -rotate-45 origin-top-left translate-y-1">
+                                {d.key.length === 10 ? d.key.slice(8) : d.key.slice(5)}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            );
+        };
+
+        const DonutChart = ({ data, title }) => {
+            if (data.length === 0) return <div className="h-32 flex items-center justify-center text-gray-300">無數據</div>;
+            let currentPercent = 0;
+            const gradientString = data.map(d => {
+                const start = currentPercent;
+                currentPercent += d.percent;
+                return `${d.color} ${start}% ${currentPercent}%`;
+            }).join(', ');
+            return (
+                <div className="flex flex-col items-center py-4">
+                    <div className="w-40 h-40 rounded-full relative mb-6 shadow-md" style={{ background: `conic-gradient(${gradientString})` }}>
+                        <div className="absolute inset-8 bg-white dark:bg-gray-800 rounded-full flex flex-col items-center justify-center shadow-inner text-center px-2">
+                            <span className="text-xs text-gray-400">{title}</span>
+                            <span className="text-sm font-bold text-gray-700 dark:text-gray-200">${data.reduce((a, b) => a + b.cost, 0).toLocaleString()}</span>
+                        </div>
+                    </div>
+                    <div className="w-full px-2 space-y-1">
+                        {data.map(d => (
+                            <div key={d.name} className="flex items-center justify-between text-xs py-1 border-b border-gray-50 dark:border-gray-700/50 last:border-0">
+                                <div className="flex items-center flex-1 min-w-0 mr-2">
+                                    <span className="w-2.5 h-2.5 rounded-full mr-2 flex-shrink-0" style={{background: d.color}}></span>
+                                    <span className="truncate text-gray-600 dark:text-gray-300">{d.name}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-gray-500 dark:text-gray-400 font-medium">${d.cost.toLocaleString()}</span>
+                                    <span className="font-bold text-gray-800 dark:text-gray-200 w-10 text-right">{d.percent.toFixed(1)}%</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- 獨立頁面：車輛列表/設定 ---
+        const VehicleManager = ({ vehicles, setVehicles, defaultVehicleId, setDefaultVehicleId, setSubPage }) => {
+            const [editingId, setEditingId] = useState(null);
+            const [editForm, setEditForm] = useState({});
+
+            const handleAdd = () => {
+                const newId = generateId();
+                setEditForm({ id: newId, name: '新車輛', make: '', model: '', batteryCapacity: '', currentMileage: '', licenseDate: '', insuranceDate: '' });
+                setEditingId(newId);
+            };
+
+            const handleSave = () => {
+                if (editingId) {
+                    if (vehicles.find(v => v.id === editingId)) {
+                        setVehicles(vehicles.map(v => v.id === editingId ? editForm : v));
+                    } else {
+                        setVehicles([...vehicles, editForm]);
+                        if (vehicles.length === 0) setDefaultVehicleId(editForm.id);
+                    }
+                    setEditingId(null);
+                }
+            };
+
+            const handleDelete = (id) => {
+                if (confirm('確定刪除此車輛？(不會刪除歷史紀錄)')) {
+                    const newVehicles = vehicles.filter(v => v.id !== id);
+                    setVehicles(newVehicles);
+                    if (defaultVehicleId === id && newVehicles.length > 0) setDefaultVehicleId(newVehicles[0].id);
+                }
+            };
+
+            if (editingId) {
+                // 編輯模式
+                return (
+                    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-enter pb-safe flex flex-col">
+                        <header className="bg-white dark:bg-gray-800 sticky top-0 z-20 border-b border-gray-100 dark:border-gray-700 pt-safe px-4 py-4 flex items-center justify-between">
+                            <button onClick={() => setEditingId(null)} className="text-gray-600 dark:text-gray-300 p-1"><Icon name="chevron-left" size={24} /></button>
+                            <h2 className="text-lg font-bold text-gray-800 dark:text-white">編輯車輛</h2>
+                            <button onClick={handleSave} className="text-emerald-600 font-bold text-sm">儲存</button>
+                        </header>
+                        <div className="p-4 space-y-4">
+                            <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm space-y-4 border border-gray-100 dark:border-gray-700">
+                                <div><label className="text-xs text-gray-500 dark:text-gray-400">暱稱</label><input type="text" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.name} onChange={e=>setEditForm({...editForm, name:e.target.value})} /></div>
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div><label className="text-xs text-gray-500 dark:text-gray-400">廠牌</label><input type="text" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.make} onChange={e=>setEditForm({...editForm, make:e.target.value})} /></div>
+                                    <div><label className="text-xs text-gray-500 dark:text-gray-400">型號</label><input type="text" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.model} onChange={e=>setEditForm({...editForm, model:e.target.value})} /></div>
+                                </div>
+                                <div><label className="text-xs text-gray-500 dark:text-gray-400">總電量 (kWh)</label><input type="number" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.batteryCapacity} onChange={e=>setEditForm({...editForm, batteryCapacity:e.target.value})} /></div>
+                                <div><label className="text-xs text-gray-500 dark:text-gray-400">目前里程 (km)</label><input type="number" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.currentMileage} onChange={e=>setEditForm({...editForm, currentMileage:e.target.value})} /></div>
+                                <div><label className="text-xs text-gray-500 dark:text-gray-400">發照日期</label><input type="date" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.licenseDate} onChange={e=>setEditForm({...editForm, licenseDate:e.target.value})} /></div>
+                                <div><label className="text-xs text-gray-500 dark:text-gray-400">保險到期日</label><input type="date" className="w-full p-2 border rounded-lg dark:bg-gray-700 dark:border-gray-600 dark:text-white" value={editForm.insuranceDate} onChange={e=>setEditForm({...editForm, insuranceDate:e.target.value})} /></div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            // 列表模式
+            return (
+                <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-enter pb-safe flex flex-col">
+                    <header className="bg-white dark:bg-gray-800 sticky top-0 z-20 border-b border-gray-100 dark:border-gray-700 pt-safe px-4 py-4 flex items-center justify-between">
+                        <button onClick={() => setSubPage(null)} className="text-gray-600 dark:text-gray-300 p-1"><Icon name="chevron-left" size={24} /></button>
+                        <h2 className="text-lg font-bold text-gray-800 dark:text-white">車輛管理</h2>
+                        <button onClick={handleAdd} className="text-emerald-600"><Icon name="plus" size={24} /></button>
+                    </header>
+                    <div className="p-4 space-y-3">
+                        {vehicles.map(v => (
+                            <div key={v.id} className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700">
+                                <div className="flex justify-between items-start mb-3">
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <h3 className="font-bold text-gray-800 dark:text-white text-lg">{v.name}</h3>
+                                            {v.id === defaultVehicleId && <span className="bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 text-[10px] px-1.5 rounded">預設</span>}
+                                        </div>
+                                        <p className="text-xs text-gray-500 dark:text-gray-400">{v.make} {v.model}</p>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <button onClick={() => setDefaultVehicleId(v.id)} className={`p-1.5 rounded-full ${v.id === defaultVehicleId ? 'text-emerald-500' : 'text-gray-300 dark:text-gray-600'}`}><Icon name="star" size={18} /></button>
+                                        <button onClick={() => { setEditForm(v); setEditingId(v.id); }} className="text-blue-500 p-1.5"><Icon name="edit-2" size={18} /></button>
+                                        <button onClick={() => handleDelete(v.id)} className="text-red-400 p-1.5"><Icon name="trash-2" size={18} /></button>
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg">
+                                    <div className="flex items-center gap-1"><Icon name="gauge" size={12}/> 里程: {v.currentMileage ? `${v.currentMileage} km` : '--'}</div>
+                                    <div className="flex items-center gap-1"><Icon name="calendar-clock" size={12}/> 車齡: {getVehicleAge(v.licenseDate) || '--'}</div>
+                                </div>
+                            </div>
+                        ))}
+                        {vehicles.length === 0 && <div className="text-center text-gray-400 py-10">尚無車輛，請點擊右上角新增</div>}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- App 主程式 ---
+        const App = () => {
+            const [activeTab, setActiveTab] = useState('home');
+            const [subPage, setSubPage] = useState(null); 
+            const [records, setRecords] = useState([]);
+            const [isLoaded, setIsLoaded] = useState(false);
+            
+            // 編輯狀態
+            const [editingRecord, setEditingRecord] = useState(null);
+
+            // 主題狀態
+            const [theme, setTheme] = useState(localStorage.getItem('ev_theme') || 'light');
+
+            // 多車輛狀態
+            const [vehicles, setVehicles] = useState([]);
+            const [defaultVehicleId, setDefaultVehicleId] = useState(null);
+            const [activeVehicleId, setActiveVehicleId] = useState(null); 
+
+            const [definedUsers, setDefinedUsers] = useState(['所有人', '我', '家人']);
+            const [analysisCategories, setAnalysisCategories] = useState(RECORD_TYPES.map(t => t.id));
+
+            // 篩選狀態
+            const currentYearStr = new Date().getFullYear().toString();
+            const currentMonthStr = new Date().toISOString().slice(0, 7);
+            const [filterMode, setFilterMode] = useState('year'); 
+            const [selectedYear, setSelectedYear] = useState(currentYearStr);
+            const [selectedMonth, setSelectedMonth] = useState(currentMonthStr);
+            const [customRange, setCustomRange] = useState({ start: '', end: '' });
+
+            // 主題切換
+            useEffect(() => {
+                if (theme === 'dark') {
+                    document.documentElement.classList.add('dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                }
+                localStorage.setItem('ev_theme', theme);
+            }, [theme]);
+
+            const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
+
+            // 初始化與資料遷移
+            useEffect(() => {
+                const savedRecords = localStorage.getItem('ev_records_db');
+                const savedVehicleSettings = localStorage.getItem('ev_vehicle_settings'); 
+                const savedVehicles = localStorage.getItem('ev_vehicles_list'); 
+                const savedDefaultId = localStorage.getItem('ev_default_vehicle_id');
+                const savedUsers = localStorage.getItem('ev_defined_users');
+
+                let initVehicles = [];
+                let initDefaultId = null;
+
+                if (savedVehicles) {
+                    initVehicles = JSON.parse(savedVehicles);
+                    initDefaultId = savedDefaultId;
+                } else if (savedVehicleSettings) {
+                    const oldSetting = JSON.parse(savedVehicleSettings);
+                    const newId = generateId();
+                    initVehicles = [{ ...oldSetting, id: newId }];
+                    initDefaultId = newId;
+                } else {
+                    const newId = generateId();
+                    initVehicles = [{ id: newId, name: '我的愛車', make: '', model: '' }];
+                    initDefaultId = newId;
+                }
+                
+                setVehicles(initVehicles);
+                setDefaultVehicleId(initDefaultId);
+                setActiveVehicleId(initDefaultId);
+
+                if (savedRecords) {
+                    try {
+                        const parsed = JSON.parse(savedRecords);
+                        if (Array.isArray(parsed)) {
+                            const migrated = parsed.map(r => ({
+                                ...r,
+                                type: r.type || 'charging', 
+                                user: r.user || '所有人',
+                                note: r.note || '',
+                                expiryDate: r.expiryDate || '',
+                                vehicleId: r.vehicleId || initDefaultId 
+                            }));
+                            setRecords(migrated);
+                        }
+                    } catch (e) { console.error(e); }
+                }
+                
+                if (savedUsers) setDefinedUsers(JSON.parse(savedUsers));
+                
+                setIsLoaded(true);
+            }, []);
+
+            useEffect(() => {
+                if (isLoaded) {
+                    localStorage.setItem('ev_records_db', JSON.stringify(records));
+                    localStorage.setItem('ev_vehicles_list', JSON.stringify(vehicles));
+                    localStorage.setItem('ev_default_vehicle_id', defaultVehicleId);
+                    localStorage.setItem('ev_defined_users', JSON.stringify(definedUsers));
+                }
+            }, [records, vehicles, defaultVehicleId, definedUsers, isLoaded]);
+
+            // --- 篩選 ---
+            const vehicleRecords = useMemo(() => {
+                if (!activeVehicleId) return [];
+                return records.filter(r => r.vehicleId === activeVehicleId);
+            }, [records, activeVehicleId]);
+
+            const filteredRecords = useMemo(() => {
+                let filtered = vehicleRecords.filter(r => analysisCategories.includes(r.type));
+                if (filterMode === 'year') {
+                    if (selectedYear === 'all') { /* pass */ }
+                    else filtered = filtered.filter(r => r.date && r.date.startsWith(selectedYear));
+                } else if (filterMode === 'month') {
+                    filtered = filtered.filter(r => r.date && r.date.startsWith(selectedMonth));
+                } else {
+                    if (customRange.start && customRange.end) {
+                        const start = new Date(customRange.start + 'T00:00:00');
+                        const end = new Date(customRange.end + 'T23:59:59');
+                        filtered = filtered.filter(r => {
+                            if (!r.date) return false;
+                            const d = new Date(r.date);
+                            return d >= start && d <= end;
+                        });
+                    }
+                }
+                return filtered.sort((a,b) => new Date(b.date) - new Date(a.date));
+            }, [vehicleRecords, filterMode, selectedYear, selectedMonth, customRange, analysisCategories]);
+
+            const getVendorOptions = useCallback((type) => {
+                const targetRecords = vehicleRecords.filter(r => r.type === type);
+                const vendors = new Set(targetRecords.map(r => r.vendor).filter(Boolean));
+                if (type === 'charging') ['EVOASIS', 'Tesla', 'U-power', 'TAIL', 'EVALUE'].forEach(v => vendors.add(v));
+                return Array.from(vendors);
+            }, [vehicleRecords]);
+
+            const userOptions = useMemo(() => {
+                const existing = new Set();
+                vehicleRecords.forEach(r => {
+                    if (r.user) r.user.split(',').forEach(u => existing.add(u.trim()));
+                });
+                return Array.from(new Set([...definedUsers, ...existing])).filter(Boolean);
+            }, [vehicleRecords, definedUsers]);
+
+            const availableYears = useMemo(() => {
+                const years = new Set(vehicleRecords.map(r => r.date ? r.date.substring(0, 4) : currentYearStr));
+                years.add(currentYearStr);
+                return Array.from(years).sort().reverse();
+            }, [vehicleRecords, currentYearStr]);
+
+            const stats = useMemo(() => {
+                const totalCost = filteredRecords.reduce((acc, r) => acc + (Number(r.cost)||0), 0);
+                const totalKwh = filteredRecords.filter(r => r.type === 'charging').reduce((acc, r) => acc + (Number(r.kwh)||0), 0);
+                const chargingCost = filteredRecords.filter(r => r.type === 'charging').reduce((acc, r) => acc + (Number(r.cost)||0), 0);
+                const avg = totalKwh ? (chargingCost / totalKwh).toFixed(2) : 0;
+                return { totalCost, totalKwh: totalKwh.toFixed(1), avg };
+            }, [filteredRecords]);
+
+            const trendStats = useMemo(() => {
+                const groups = {};
+                let startDate, endDate;
+                let isDaily = false;
+
+                if (filterMode === 'month') {
+                    isDaily = true;
+                    const [y, m] = selectedMonth.split('-');
+                    startDate = new Date(y, m - 1, 1);
+                    endDate = new Date(y, m, 0);
+                } else if (filterMode === 'year') {
+                    if (selectedYear === 'all') {
+                        if (records.length > 0) {
+                            const dates = records.map(r => new Date(r.date));
+                            startDate = new Date(Math.min(...dates));
+                            endDate = new Date(Math.max(...dates));
+                        } else {
+                            startDate = new Date(currentYearStr, 0, 1);
+                            endDate = new Date(currentYearStr, 11, 31);
+                        }
+                    } else {
+                        startDate = new Date(selectedYear, 0, 1);
+                        endDate = new Date(selectedYear, 11, 31);
+                    }
+                } else {
+                    startDate = new Date(customRange.start || new Date());
+                    endDate = new Date(customRange.end || new Date());
+                }
+
+                const curr = new Date(startDate);
+                if (isDaily) {
+                    while (curr <= endDate) {
+                        const key = curr.toISOString().slice(0, 10);
+                        groups[key] = 0;
+                        curr.setDate(curr.getDate() + 1);
+                    }
+                } else {
+                    const startY = startDate.getFullYear();
+                    const startM = startDate.getMonth();
+                    const endY = endDate.getFullYear();
+                    const endM = endDate.getMonth();
+                    let y = startY, m = startM;
+                    while (y < endY || (y === endY && m <= endM)) {
+                        const key = `${y}-${String(m + 1).padStart(2, '0')}`;
+                        groups[key] = 0;
+                        m++;
+                        if (m > 11) { m = 0; y++; }
+                    }
+                }
+
+                filteredRecords.forEach(r => {
+                    if(!r.date) return;
+                    let key = isDaily ? r.date.substring(0, 10) : r.date.substring(0, 7);
+                    if (groups.hasOwnProperty(key)) {
+                        groups[key] += Number(r.cost)||0;
+                    }
+                });
+
+                return Object.keys(groups).sort().map(k => ({ key: k, cost: groups[k] }));
+            }, [filteredRecords, filterMode, selectedYear, selectedMonth, customRange, records]);
+
+            const typeStats = useMemo(() => {
+                const groups = {};
+                let total = 0;
+                filteredRecords.forEach(r => {
+                    const typeObj = RECORD_TYPES.find(t => t.id === r.type);
+                    const label = typeObj ? typeObj.label : '未知';
+                    if (!groups[label]) groups[label] = 0;
+                    groups[label] += Number(r.cost)||0;
+                    total += Number(r.cost)||0;
+                });
+                const colors = ['#10b981', '#f59e0b', '#8b5cf6', '#3b82f6', '#ec4899', '#6b7280'];
+                return Object.keys(groups).map((type, index) => ({
+                    name: type,
+                    cost: groups[type],
+                    percent: total > 0 ? (groups[type] / total) * 100 : 0,
+                    color: colors[index % colors.length]
+                })).sort((a, b) => b.cost - a.cost);
+            }, [filteredRecords]);
+
+            const userStats = useMemo(() => {
+                const groups = {};
+                let total = 0;
+                filteredRecords.forEach(r => {
+                    const user = r.user || '所有人';
+                    const cost = Number(r.cost) || 0;
+                    if (!groups[user]) groups[user] = 0;
+                    groups[user] += cost;
+                    total += cost;
+                });
+                const colors = ['#6366f1', '#ec4899', '#14b8a6', '#f97316', '#8b5cf6', '#3b82f6'];
+                return Object.keys(groups).map((user, index) => ({
+                    name: user,
+                    cost: groups[user],
+                    percent: total > 0 ? (groups[user] / total) * 100 : 0,
+                    color: colors[index % colors.length]
+                })).sort((a, b) => b.cost - a.cost);
+            }, [filteredRecords]);
+
+            // --- Handlers ---
+            const handleSaveRecord = useCallback((recordData) => {
+                if (editingRecord) {
+                    setRecords(prev => prev.map(r => r.id === editingRecord.id ? { ...recordData, id: r.id, vehicleId: r.vehicleId } : r).sort((a,b) => new Date(b.date) - new Date(a.date)));
+                    setEditingRecord(null);
+                } else {
+                    if (recordData.mileage) {
+                        setVehicles(prev => prev.map(v => v.id === activeVehicleId ? { ...v, currentMileage: recordData.mileage } : v));
+                    }
+                    setRecords(prev => [{ ...recordData, id: generateId(), vehicleId: activeVehicleId }, ...prev].sort((a,b) => new Date(b.date) - new Date(a.date)));
+                }
+            }, [activeVehicleId, editingRecord]);
+
+            const handleDelete = useCallback((id) => {
+                if(confirm('確定刪除此紀錄？')) setRecords(prev => prev.filter(r => r.id !== id));
+            }, []);
+
+            const onEditClick = (record) => {
+                setEditingRecord(record);
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+            };
+
+            const onCancelEdit = () => {
+                setEditingRecord(null);
+            }
+
+            const handleBackup = () => {
+                const backupData = { records, vehicles, defaultVehicleId, definedUsers };
+                const dataStr = JSON.stringify(backupData, null, 2);
+                const blob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Car_Backup_${new Date().toISOString().slice(0,10)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+
+            const handleRestore = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.target.result);
+                        if (data.records && Array.isArray(data.records)) {
+                            if(confirm(`找到 ${data.records.length} 筆資料，確定還原？`)) {
+                                setRecords(data.records);
+                                if(data.vehicles) setVehicles(data.vehicles);
+                                if(data.defaultVehicleId) setDefaultVehicleId(data.defaultVehicleId);
+                                if(data.definedUsers) setDefinedUsers(data.definedUsers);
+                                alert('還原成功！');
+                            }
+                        } else if (Array.isArray(data)) {
+                            if(confirm(`找到 ${data.length} 筆資料(舊格式)，確定還原？`)) {
+                                const migrated = data.map(r => ({ ...r, type: r.type || 'charging', user: r.user||'所有人', note: r.note||'' }));
+                                setRecords(migrated);
+                                alert('還原成功！');
+                            }
+                        }
+                    } catch(err) { alert('檔案格式錯誤'); }
+                };
+                reader.readAsText(file);
+                e.target.value = '';
+            };
+
+            const handleExportCSV = () => {
+                const header = "日期時間,類別,廠商/名稱,費用,度數,里程,使用者,備註,到期日,車輛\n";
+                const rows = vehicleRecords.map(r => {
+                    const typeLabel = RECORD_TYPES.find(t => t.id === r.type)?.label || r.type;
+                    const vName = vehicles.find(v => v.id === r.vehicleId)?.name || '未知';
+                    return `${r.date},${typeLabel},${r.vendor},${r.cost},${r.kwh||''},${r.mileage||''},"${r.user||'所有人'}",${(r.note||'').replace(/,/g, ' ')},${r.expiryDate||''},${vName}`;
+                }).join('\n');
+                const blob = new Blob(["\uFEFF" + header + rows], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Car_Report_${new Date().toISOString().slice(0,10)}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            };
+
+            const addUser = () => {
+                const name = prompt("請輸入使用者名稱：");
+                if (name && !definedUsers.includes(name)) setDefinedUsers([...definedUsers, name]);
+            };
+            const removeUser = (name) => {
+                if (confirm('確定移除？')) setDefinedUsers(definedUsers.filter(u => u !== name));
+            };
+
+            // --- 畫面渲染 ---
+            const renderContent = () => {
+                if (subPage === 'vehicleSettings') {
+                    return <VehicleManager vehicles={vehicles} setVehicles={setVehicles} defaultVehicleId={defaultVehicleId} setDefaultVehicleId={setDefaultVehicleId} setSubPage={setSubPage} />;
+                }
+
+                if (activeTab === 'home') return (
+                    <div className="space-y-6 animate-fade-in pb-24">
+                        <RecordForm 
+                            onSave={handleSaveRecord} 
+                            getVendorOptions={getVendorOptions} 
+                            userOptions={userOptions} 
+                            currentVehicle={vehicles.find(v => v.id === activeVehicleId)} 
+                            editingRecord={editingRecord}
+                            onCancelEdit={onCancelEdit}
+                        />
+                        <div>
+                            <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3 px-1">
+                                {vehicles.find(v => v.id === activeVehicleId)?.name} 的最近紀錄 ({vehicleRecords.length})
+                            </h3>
+                            <RecordList records={vehicleRecords.slice(0, 20)} onDelete={handleDelete} onEdit={onEditClick} />
+                        </div>
+                    </div>
+                );
+
+                if (activeTab === 'dashboard') return (
+                    <div className="space-y-6 animate-fade-in pb-24">
+                        <div className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 space-y-3">
+                            <div className="flex justify-between items-center">
+                                <label className="text-sm font-bold text-gray-600 dark:text-gray-300 flex items-center gap-2"><Icon name="filter" size={16} /> 統計範圍</label>
+                                <div className="flex bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
+                                    <button onClick={() => setFilterMode('year')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${filterMode === 'year' ? 'bg-white dark:bg-gray-600 text-emerald-600 dark:text-emerald-300 shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>依年份</button>
+                                    <button onClick={() => setFilterMode('month')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${filterMode === 'month' ? 'bg-white dark:bg-gray-600 text-emerald-600 dark:text-emerald-300 shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>依月份</button>
+                                    <button onClick={() => setFilterMode('custom')} className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${filterMode === 'custom' ? 'bg-white dark:bg-gray-600 text-emerald-600 dark:text-emerald-300 shadow-sm' : 'text-gray-500 dark:text-gray-400'}`}>自訂</button>
+                                </div>
+                            </div>
+                            {filterMode === 'year' && (
+                                <div className="relative"><select value={selectedYear} onChange={(e) => setSelectedYear(e.target.value)} className="w-full appearance-none bg-emerald-50 dark:bg-gray-700 text-emerald-700 dark:text-emerald-300 font-bold py-2 pl-4 pr-8 rounded-lg text-sm focus:outline-none">{availableYears.map(y => (<option key={y} value={y}>{y} 年</option>))}<option value="all">全部年份</option></select><div className="absolute right-3 top-2.5 pointer-events-none text-emerald-600 dark:text-emerald-400"><Icon name="chevron-down" size={16} /></div></div>
+                            )}
+                            {filterMode === 'month' && (
+                                <div className="relative"><input type="month" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="w-full bg-emerald-50 dark:bg-gray-700 text-emerald-700 dark:text-emerald-300 font-bold py-2 px-4 rounded-lg text-sm focus:outline-none" /></div>
+                            )}
+                            {/* 類別篩選器 */}
+                            <div className="mt-4 pt-3 border-t border-gray-100 dark:border-gray-700">
+                                <MultiSelect 
+                                    label="篩選類別 (多選)" 
+                                    value={analysisCategories} 
+                                    onChange={setAnalysisCategories} 
+                                    options={RECORD_TYPES.map(t => ({ value: t.id, label: t.label }))} 
+                                    placeholder="選擇類別..."
+                                />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-2xl p-5 text-white shadow-lg shadow-emerald-200 col-span-2">
+                                <div className="text-emerald-100 text-xs mb-1 flex items-center gap-1"><Icon name="wallet" size={12}/> 總花費 <span className="opacity-75 text-[10px] ml-1">({filterMode==='year'?(selectedYear==='all'?'全部':selectedYear):filterMode==='month'?selectedMonth:'自訂'})</span></div>
+                                <div className="text-3xl font-bold">${stats.totalCost.toLocaleString()}</div>
+                            </div>
+                            <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700"><div className="text-gray-400 text-xs mb-1">充電總度數</div><div className="text-xl font-bold text-gray-800 dark:text-white">{stats.totalKwh} <span className="text-xs font-normal text-gray-400">kWh</span></div></div>
+                            <div className="bg-white dark:bg-gray-800 p-4 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700"><div className="text-gray-400 text-xs mb-1">平均電價</div><div className="text-xl font-bold text-gray-800 dark:text-white">${stats.avg} <span className="text-xs font-normal text-gray-400">/度</span></div></div>
+                        </div>
+                        
+                        <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-2 text-sm flex items-center gap-2"><Icon name="pie-chart" className="text-emerald-500" /> 花費類別佔比</h3>
+                            <DonutChart data={typeStats} title="類別總計" />
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-2 text-sm flex items-center gap-2"><Icon name="users" className="text-blue-500" /> 使用者分帳統計</h3>
+                            <DonutChart data={userStats} title="分帳總計" />
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-2 text-sm flex items-center gap-2"><Icon name="bar-chart-3" className="text-emerald-500" /> 花費趨勢</h3>
+                            <BarChart data={trendStats} />
+                        </div>
+                    </div>
+                );
+
+                if (activeTab === 'settings') return (
+                    <div className="space-y-6 animate-fade-in pb-24">
+                        <div 
+                            className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center cursor-pointer active:scale-[0.98] transition-all hover:bg-gray-50 dark:hover:bg-gray-700"
+                            onClick={() => setSubPage('vehicleSettings')}
+                        >
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 bg-emerald-50 dark:bg-emerald-900/30 rounded-xl text-emerald-600 dark:text-emerald-400">
+                                    <Icon name="car" size={24} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-gray-800 dark:text-white text-sm">車輛管理</h3>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                        管理 {vehicles.length} 台車輛設定
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="text-gray-300">
+                                <Icon name="chevron-right" size={20} />
+                            </div>
+                        </div>
+
+                        {/* 主題設定 */}
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center">
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 bg-blue-50 dark:bg-blue-900/30 rounded-xl text-blue-600 dark:text-blue-400">
+                                    <Icon name={theme === 'dark' ? 'moon' : 'sun'} size={24} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-gray-800 dark:text-white text-sm">外觀主題</h3>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                        {theme === 'dark' ? '深色模式' : '淺色模式'}
+                                    </p>
+                                </div>
+                            </div>
+                            <button 
+                                onClick={toggleTheme}
+                                className={`w-12 h-6 rounded-full p-1 transition-colors ${theme === 'dark' ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                            >
+                                <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform ${theme === 'dark' ? 'translate-x-6' : 'translate-x-0'}`} />
+                            </button>
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="users" className="text-emerald-500" /> 使用者管理</h3>
+                            <div className="flex flex-wrap gap-2 mb-4">
+                                {definedUsers.map(user => (
+                                    <span key={user} className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2">
+                                        {user}
+                                        {user !== '所有人' && <button onClick={() => removeUser(user)} className="text-gray-400 hover:text-red-500">×</button>}
+                                    </span>
+                                ))}
+                                <button onClick={addUser} className="bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 px-3 py-1.5 rounded-lg text-sm font-bold border border-emerald-100 dark:border-emerald-800 flex items-center gap-1 hover:bg-emerald-100 dark:hover:bg-emerald-900/40">
+                                    <Icon name="plus" size={14} /> 新增
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="cloud" className="text-emerald-500" /> 資料備份與還原</h3>
+                            <div className="flex gap-2">
+                                <button onClick={handleBackup} className="flex-1 bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-200 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-600"><Icon name="download-cloud" size={18} /> 備份</button>
+                                <div className="relative flex-1"><input type="file" id="restoreFile" accept=".json" className="hidden" onChange={handleRestore} /><button onClick={() => document.getElementById('restoreFile').click()} className="w-full h-full border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700"><Icon name="upload-cloud" size={18} /> 還原</button></div>
+                            </div>
+                        </div>
+                        
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700"><h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="file-spreadsheet" className="text-emerald-500" /> 匯出報表</h3><button onClick={handleExportCSV} className="w-full border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"><Icon name="file-text" size={18} /> 下載 CSV (Excel)</button></div>
+                    </div>
+                );
+            };
+
+            const activeVehicleName = vehicles.find(v => v.id === activeVehicleId)?.name || '未選擇車輛';
+
+            return (
+                <div className="min-h-screen max-w-md mx-auto bg-gray-50 dark:bg-gray-900 flex flex-col transition-colors duration-200">
+                    <header className={`bg-white/80 dark:bg-gray-800/80 backdrop-blur-md sticky top-0 z-20 border-b border-gray-100 dark:border-gray-700 pt-safe px-6 py-4 flex justify-between items-center ${subPage ? 'hidden' : ''}`}>
+                        <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
+                            <Icon name="car" fill="currentColor" className="text-emerald-500" />
+                            <h1 className="text-xl font-bold text-gray-800 dark:text-white tracking-tight">養車小幫手</h1>
+                        </div>
+                        <div className="relative">
+                            <select 
+                                value={activeVehicleId || ''} 
+                                onChange={e => setActiveVehicleId(e.target.value)}
+                                className="appearance-none bg-emerald-50 dark:bg-gray-700 text-emerald-700 dark:text-emerald-300 text-xs font-bold py-1.5 pl-3 pr-6 rounded-full outline-none"
+                            >
+                                {vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                            </select>
+                            <div className="absolute right-2 top-1.5 pointer-events-none text-emerald-600 dark:text-emerald-400"><Icon name="chevron-down" size={12} /></div>
+                        </div>
+                    </header>
+                    <main className="flex-1 overflow-y-auto ${subPage ? 'p-0' : 'p-4'}">{renderContent()}</main>
+                    <nav className={`fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-100 dark:border-gray-700 pb-safe pt-2 px-6 flex justify-around items-center h-[65px] max-w-md mx-auto z-30 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.03)] ${subPage ? 'hidden' : ''}`}>
+                        <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='home'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="home" size={24} /><span className="text-[10px] font-medium">記帳</span></button>
+                        <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='dashboard'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="bar-chart-2" size={24} /><span className="text-[10px] font-medium">分析</span></button>
+                        <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='settings'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="settings" size={24} /><span className="text-[10px] font-medium">設定</span></button>
+                    </nav>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ErrorBoundary><App /></ErrorBoundary>);
+    </script>
+
+    <style>
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        
+        @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+        .page-enter { animation: slideIn 0.3s ease-out forwards; }
+    </style>
+</body>
+</html>
