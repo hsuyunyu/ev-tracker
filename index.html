@@ -2,10 +2,11 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>養車小幫手 (React版)</title>
+    <meta name="theme-color" content="#ffffff">
+    <title>養車小幫手</title>
     
     <!-- 1. Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -48,6 +49,7 @@
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         
+        /* iPhone Safe Area Fixes */
         .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
         .pt-safe { padding-top: max(1rem, env(safe-area-inset-top)); }
         
@@ -160,6 +162,38 @@
             return `${years}年${months}個月`;
         };
 
+        const checkInsuranceExpiry = (dateStr) => {
+            if (!dateStr) return false;
+            const expiry = new Date(dateStr);
+            const today = new Date();
+            // 只比較日期部分
+            expiry.setHours(0,0,0,0);
+            today.setHours(0,0,0,0);
+            
+            const diffTime = expiry - today;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            
+            // 少於等於 30 天 (包含過期) 回傳 true
+            return diffDays <= 30;
+        };
+
+        const getDisplayTitle = (r) => {
+            const typeObj = RECORD_TYPES.find(t => t.id === r.type);
+            const typeLabel = typeObj?.label || '其他';
+
+            if (r.type === 'maintenance') {
+                return r.note || r.vendor || '保養紀錄';
+            }
+            if (r.type === 'parking') {
+                return r.vendor || '停車費';
+            }
+            if (r.type === 'tolls') {
+                return r.vendor || '過路費';
+            }
+            // 保險、充電或其他，預設顯示廠商，若無則顯示類別名稱
+            return r.vendor || typeLabel;
+        };
+
         // --- 共用 UI 元件 ---
         const SuggestionInput = React.memo(({ label, value, onChange, options, placeholder, icon }) => {
             const [show, setShow] = useState(false);
@@ -263,7 +297,6 @@
                 expiryDate: ''
             });
 
-            // 監聽編輯狀態
             useEffect(() => {
                 if (editingRecord) {
                     setFormData({
@@ -278,9 +311,8 @@
                         expiryDate: editingRecord.expiryDate || ''
                     });
                 } else {
-                    // 重置為預設 (非編輯狀態)
                     setFormData(prev => ({
-                        type: prev.type, // 保留上次選擇的類型
+                        type: prev.type,
                         date: getCurrentDateTimeString(),
                         vendor: '',
                         cost: '',
@@ -400,7 +432,9 @@
                                     <span className="text-[10px] font-bold bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 px-2 py-0.5 rounded-md flex items-center gap-1">
                                         {formatDateTimeDisplay(r.date)}
                                     </span>
-                                    <span className="font-semibold text-gray-800 dark:text-gray-100 truncate">{r.vendor || typeObj?.label || '未填寫'}</span>
+                                    <span className="font-semibold text-gray-800 dark:text-gray-100 truncate">
+                                        {getDisplayTitle(r)}
+                                    </span>
                                     <span className="text-[10px] text-gray-400 border border-gray-200 dark:border-gray-600 px-1 rounded">{typeObj?.label}</span>
                                 </div>
                                 <div className="text-xs text-gray-500 dark:text-gray-400 flex gap-3 items-center flex-wrap">
@@ -408,7 +442,8 @@
                                     {r.user && r.user !== '所有人' && <span className="text-blue-500 dark:text-blue-400">{r.user}</span>}
                                     {r.mileage && <span>🚗 {r.mileage}km</span>}
                                     {r.expiryDate && <span>📅 到期: {r.expiryDate}</span>}
-                                    {r.note && <span className="text-gray-400 dark:text-gray-500 flex items-center gap-0.5"><Icon name="sticky-note" size={10} /> {r.note}</span>}
+                                    {r.note && r.type !== 'maintenance' && <span className="text-gray-400 dark:text-gray-500 flex items-center gap-0.5"><Icon name="sticky-note" size={10} /> {r.note}</span>}
+                                    {r.type === 'maintenance' && r.vendor && <span className="text-gray-500 dark:text-gray-400 flex items-center gap-0.5"><Icon name="map-pin" size={10} /> {r.vendor}</span>}
                                 </div>
                             </div>
                             <div className="text-right pl-2 flex flex-col items-end">
@@ -424,19 +459,132 @@
             );
         });
 
+        // --- 歷史紀錄頁面元件 ---
+        const HistoryPage = React.memo(({ records, onDelete, onEdit }) => {
+            const [filterType, setFilterType] = useState('all'); 
+
+            const filteredRecords = useMemo(() => {
+                if (filterType === 'all') return records;
+                if (filterType === 'parking_tolls') return records.filter(r => r.type === 'parking' || r.type === 'tolls');
+                return records.filter(r => r.type === filterType);
+            }, [records, filterType]);
+
+            const totalCost = useMemo(() => filteredRecords.reduce((sum, r) => sum + (Number(r.cost) || 0), 0), [filteredRecords]);
+
+            const tabs = [
+                { id: 'all', label: '全部' },
+                { id: 'maintenance', label: '保養' },
+                { id: 'insurance', label: '保險' },
+                { id: 'charging', label: '充電' },
+                { id: 'parking_tolls', label: '停車/過路' },
+                { id: 'other', label: '其他' },
+            ];
+            
+            return (
+                <div className="space-y-4 animate-fade-in pb-24">
+                     <div className="bg-white dark:bg-gray-800 p-2 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 overflow-x-auto hide-scrollbar flex gap-2">
+                        {tabs.map(t => (
+                            <button
+                                key={t.id}
+                                onClick={() => setFilterType(t.id)}
+                                className={`px-4 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${
+                                    filterType === t.id 
+                                    ? 'bg-emerald-500 text-white shadow-md' 
+                                    : 'bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                }`}
+                            >
+                                {t.label}
+                            </button>
+                        ))}
+                     </div>
+
+                     <div className="flex justify-between items-center px-2">
+                        <span className="text-xs text-gray-500 dark:text-gray-400">共 {filteredRecords.length} 筆紀錄</span>
+                        <span className="text-sm font-bold text-gray-800 dark:text-white">總計 ${totalCost.toLocaleString()}</span>
+                     </div>
+
+                     <div className="space-y-3">
+                        {filteredRecords.map(r => (
+                            <div key={r.id} className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex flex-col gap-2 relative overflow-hidden group">
+                                 <div className={`absolute left-0 top-0 bottom-0 w-1 ${r.type==='charging'?'bg-emerald-500':r.type==='parking'?'bg-amber-500':r.type==='tolls'?'bg-purple-500':r.type==='maintenance'?'bg-blue-500':r.type==='insurance'?'bg-pink-500':'bg-gray-400'}`}></div>
+                                 
+                                 <div className="flex justify-between items-start pl-3">
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-xs font-bold text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded">
+                                                {r.date.replace('T', ' ')}
+                                            </span>
+                                            <span className="text-xs border border-gray-200 dark:border-gray-600 text-gray-400 px-1 rounded">
+                                                {RECORD_TYPES.find(t=>t.id===r.type)?.label}
+                                            </span>
+                                        </div>
+                                        <div className="font-bold text-gray-800 dark:text-gray-100 text-lg mt-1">
+                                            {getDisplayTitle(r)}
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="text-xl font-bold text-gray-800 dark:text-white">${r.cost}</div>
+                                    </div>
+                                 </div>
+
+                                 <div className="pl-3 grid grid-cols-2 gap-y-1 gap-x-4 text-sm text-gray-600 dark:text-gray-300">
+                                    {r.type === 'maintenance' && (
+                                        <>
+                                            <div className="col-span-2 flex items-center gap-1 font-medium text-blue-600 dark:text-blue-400">
+                                                <Icon name="gauge" size={14} /> 
+                                                里程: {r.mileage ? `${r.mileage} km` : '--'}
+                                            </div>
+                                            {r.vendor && (
+                                                <div className="col-span-2 flex items-center gap-1 text-gray-500 dark:text-gray-400">
+                                                    <Icon name="map-pin" size={14} /> 
+                                                    {r.vendor}
+                                                </div>
+                                            )}
+                                        </>
+                                    )}
+                                    {r.type === 'insurance' && (
+                                        <div className={`col-span-2 flex items-center gap-1 ${checkInsuranceExpiry(r.expiryDate) ? 'text-red-500 font-bold' : ''}`}>
+                                            <Icon name="calendar-clock" size={14} className={checkInsuranceExpiry(r.expiryDate) ? 'text-red-500' : 'text-gray-400'}/>
+                                            到期日: {r.expiryDate || '--'}
+                                            {checkInsuranceExpiry(r.expiryDate) && <span className="text-xs bg-red-100 text-red-600 px-1 rounded ml-1">即將到期</span>}
+                                        </div>
+                                    )}
+                                    {r.note && (
+                                        <div className="col-span-2 flex items-start gap-1 mt-1 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg text-xs">
+                                            <Icon name="sticky-note" size={14} className="text-gray-400 mt-0.5 flex-shrink-0"/>
+                                            <span className="break-all">{r.note}</span>
+                                        </div>
+                                    )}
+                                 </div>
+
+                                 <div className="flex justify-end gap-3 pt-2 border-t border-gray-50 dark:border-gray-700/50 mt-1 pl-3">
+                                    <button onClick={() => onEdit(r)} className="text-blue-500 text-xs font-bold flex items-center gap-1"><Icon name="edit-2" size={12}/> 編輯</button>
+                                    <button onClick={() => onDelete(r.id)} className="text-red-400 text-xs font-bold flex items-center gap-1"><Icon name="trash-2" size={12}/> 刪除</button>
+                                 </div>
+                            </div>
+                        ))}
+                        {filteredRecords.length === 0 && (
+                            <div className="text-center text-gray-400 py-12">無紀錄</div>
+                        )}
+                     </div>
+                </div>
+            )
+        });
+
         // --- 圖表元件 ---
         const BarChart = ({ data }) => {
             if (data.length === 0) return <div className="h-32 flex items-center justify-center text-gray-300">無數據</div>;
             const max = Math.max(...data.map(d => d.cost)) || 1;
-            
+            const isDense = data.length > 15;
+
             return (
-                <div className="flex items-end gap-1 h-48 overflow-x-auto pt-6 px-2 hide-scrollbar">
+                <div className={`flex items-end gap-1 h-48 pt-6 px-2 ${isDense ? 'overflow-x-auto hide-scrollbar justify-start' : 'w-full justify-between'}`}>
                     {data.map((d, i) => (
-                        <div key={d.key} className="flex flex-col items-center min-w-[20px] group relative">
+                        <div key={d.key} className={`flex flex-col items-center group relative ${isDense ? 'min-w-[20px]' : 'flex-1'}`}>
                             {d.cost > 0 && (
                                 <div className="absolute -top-6 bg-emerald-600 text-white text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 z-index-10">${d.cost}</div>
                             )}
-                            <div className={`w-3 rounded-t-md transition-all duration-500 ${i===data.length-1 ? 'bg-emerald-500':'bg-emerald-300 dark:bg-emerald-900'}`} 
+                            <div className={`w-full max-w-[12px] rounded-t-md transition-all duration-500 ${i===data.length-1 ? 'bg-emerald-500':'bg-emerald-300 dark:bg-emerald-900'}`} 
                                     style={{ height: `${(d.cost/max)*140}px`, minHeight: d.cost === 0 ? '1px' : '4px', opacity: d.cost === 0 ? 0.3 : 1 }}></div>
                             <div className="mt-2 text-[9px] text-gray-400 text-center leading-tight whitespace-nowrap transform -rotate-45 origin-top-left translate-y-1">
                                 {d.key.length === 10 ? d.key.slice(8) : d.key.slice(5)}
@@ -563,9 +711,15 @@
                                         <button onClick={() => handleDelete(v.id)} className="text-red-400 p-1.5"><Icon name="trash-2" size={18} /></button>
                                     </div>
                                 </div>
-                                <div className="grid grid-cols-2 gap-2 text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg">
+                                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg">
                                     <div className="flex items-center gap-1"><Icon name="gauge" size={12}/> 里程: {v.currentMileage ? `${v.currentMileage} km` : '--'}</div>
                                     <div className="flex items-center gap-1"><Icon name="calendar-clock" size={12}/> 車齡: {getVehicleAge(v.licenseDate) || '--'}</div>
+                                    {v.insuranceDate && (
+                                        <div className={`flex items-center gap-1 col-span-2 ${checkInsuranceExpiry(v.insuranceDate) ? 'text-red-500 font-bold' : ''}`}>
+                                            <Icon name="shield" size={12}/> 保險到期: {v.insuranceDate}
+                                            {checkInsuranceExpiry(v.insuranceDate) && <span className="text-[10px] ml-1">(即將到期)</span>}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         ))}
@@ -587,6 +741,9 @@
 
             // 主題狀態
             const [theme, setTheme] = useState(localStorage.getItem('ev_theme') || 'light');
+
+            // 應用程式設定 (新)
+            const [appSettings, setAppSettings] = useState({ recentLimit: 5 });
 
             // 多車輛狀態
             const [vehicles, setVehicles] = useState([]);
@@ -623,6 +780,13 @@
                 const savedVehicles = localStorage.getItem('ev_vehicles_list'); 
                 const savedDefaultId = localStorage.getItem('ev_default_vehicle_id');
                 const savedUsers = localStorage.getItem('ev_defined_users');
+                const savedAppSettings = localStorage.getItem('ev_app_settings');
+
+                if (savedAppSettings) {
+                    try {
+                        setAppSettings(JSON.parse(savedAppSettings));
+                    } catch(e) {}
+                }
 
                 let initVehicles = [];
                 let initDefaultId = null;
@@ -673,8 +837,9 @@
                     localStorage.setItem('ev_vehicles_list', JSON.stringify(vehicles));
                     localStorage.setItem('ev_default_vehicle_id', defaultVehicleId);
                     localStorage.setItem('ev_defined_users', JSON.stringify(definedUsers));
+                    localStorage.setItem('ev_app_settings', JSON.stringify(appSettings));
                 }
-            }, [records, vehicles, defaultVehicleId, definedUsers, isLoaded]);
+            }, [records, vehicles, defaultVehicleId, definedUsers, appSettings, isLoaded]);
 
             // --- 篩選 ---
             const vehicleRecords = useMemo(() => {
@@ -835,11 +1000,29 @@
             const handleSaveRecord = useCallback((recordData) => {
                 if (editingRecord) {
                     setRecords(prev => prev.map(r => r.id === editingRecord.id ? { ...recordData, id: r.id, vehicleId: r.vehicleId } : r).sort((a,b) => new Date(b.date) - new Date(a.date)));
+                    
+                    // 同步更新車輛資料 (如果是保險或里程)
+                    setVehicles(prev => prev.map(v => {
+                        if (v.id === activeVehicleId) {
+                            const updated = { ...v };
+                            if (recordData.mileage) updated.currentMileage = recordData.mileage;
+                            if (recordData.type === 'insurance' && recordData.expiryDate) updated.insuranceDate = recordData.expiryDate;
+                            return updated;
+                        }
+                        return v;
+                    }));
+                    
                     setEditingRecord(null);
                 } else {
-                    if (recordData.mileage) {
-                        setVehicles(prev => prev.map(v => v.id === activeVehicleId ? { ...v, currentMileage: recordData.mileage } : v));
-                    }
+                    setVehicles(prev => prev.map(v => {
+                        if (v.id === activeVehicleId) {
+                            const updated = { ...v };
+                            if (recordData.mileage) updated.currentMileage = recordData.mileage;
+                            if (recordData.type === 'insurance' && recordData.expiryDate) updated.insuranceDate = recordData.expiryDate;
+                            return updated;
+                        }
+                        return v;
+                    }));
                     setRecords(prev => [{ ...recordData, id: generateId(), vehicleId: activeVehicleId }, ...prev].sort((a,b) => new Date(b.date) - new Date(a.date)));
                 }
             }, [activeVehicleId, editingRecord]);
@@ -850,6 +1033,7 @@
 
             const onEditClick = (record) => {
                 setEditingRecord(record);
+                if (activeTab !== 'home') setActiveTab('home');
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             };
 
@@ -941,11 +1125,15 @@
                         />
                         <div>
                             <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3 px-1">
-                                {vehicles.find(v => v.id === activeVehicleId)?.name} 的最近紀錄 ({vehicleRecords.length})
+                                {vehicles.find(v => v.id === activeVehicleId)?.name} 的最近紀錄
                             </h3>
-                            <RecordList records={vehicleRecords.slice(0, 20)} onDelete={handleDelete} onEdit={onEditClick} />
+                            <RecordList records={vehicleRecords.slice(0, appSettings.recentLimit)} onDelete={handleDelete} onEdit={onEditClick} />
                         </div>
                     </div>
+                );
+
+                if (activeTab === 'history') return (
+                    <HistoryPage records={vehicleRecords} onDelete={handleDelete} onEdit={onEditClick} />
                 );
 
                 if (activeTab === 'dashboard') return (
@@ -1046,6 +1234,26 @@
                             </button>
                         </div>
 
+                        {/* 首頁顯示設定 */}
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="layout" className="text-indigo-500" /> 顯示設定</h3>
+                            <div className="flex justify-between items-center">
+                                <label className="text-sm font-medium text-gray-600 dark:text-gray-400">首頁最近紀錄筆數</label>
+                                <div className="flex items-center gap-3">
+                                    <input 
+                                        type="range" 
+                                        min="3" 
+                                        max="50" 
+                                        step="1" 
+                                        className="w-32 h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                                        value={appSettings.recentLimit} 
+                                        onChange={e => setAppSettings({...appSettings, recentLimit: Number(e.target.value)})}
+                                    />
+                                    <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 w-6 text-center">{appSettings.recentLimit}</span>
+                                </div>
+                            </div>
+                        </div>
+
                         <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
                             <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="users" className="text-emerald-500" /> 使用者管理</h3>
                             <div className="flex flex-wrap gap-2 mb-4">
@@ -1097,6 +1305,7 @@
                     <main className="flex-1 overflow-y-auto ${subPage ? 'p-0' : 'p-4'}">{renderContent()}</main>
                     <nav className={`fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-800 border-t border-gray-100 dark:border-gray-700 pb-safe pt-2 px-6 flex justify-around items-center h-[65px] max-w-md mx-auto z-30 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.03)] ${subPage ? 'hidden' : ''}`}>
                         <button onClick={() => setActiveTab('home')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='home'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="home" size={24} /><span className="text-[10px] font-medium">記帳</span></button>
+                        <button onClick={() => setActiveTab('history')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='history'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="file-text" size={24} /><span className="text-[10px] font-medium">紀錄</span></button>
                         <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='dashboard'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="bar-chart-2" size={24} /><span className="text-[10px] font-medium">分析</span></button>
                         <button onClick={() => setActiveTab('settings')} className={`flex flex-col items-center gap-1 w-16 ${activeTab==='settings'?'text-emerald-600 dark:text-emerald-400':'text-gray-400'}`}><Icon name="settings" size={24} /><span className="text-[10px] font-medium">設定</span></button>
                     </nav>
