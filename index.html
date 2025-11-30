@@ -2,7 +2,8 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <!-- 移除 viewport-fit=cover 以解決 iPhone 頂部遮擋問題 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#ffffff">
@@ -549,7 +550,7 @@
                                             {checkInsuranceExpiry(r.expiryDate) && <span className="text-xs bg-red-100 text-red-600 px-1 rounded ml-1">即將到期</span>}
                                         </div>
                                     )}
-                                    {r.note && (
+                                    {r.note && r.type !== 'maintenance' && (
                                         <div className="col-span-2 flex items-start gap-1 mt-1 bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg text-xs">
                                             <Icon name="sticky-note" size={14} className="text-gray-400 mt-0.5 flex-shrink-0"/>
                                             <span className="break-all">{r.note}</span>
