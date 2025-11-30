@@ -2,10 +2,7 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="theme-color" content="#ffffff">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>養車小幫手</title>
     
     <!-- 1. Tailwind CSS -->
@@ -49,11 +46,9 @@
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         
-        /* iPhone Safe Area Fixes - 加大頂部距離 */
+        /* iPhone Safe Area Fixes - 還原為標準設定 */
         .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
-        .pt-safe { 
-            padding-top: calc(env(safe-area-inset-top) + 16px); /* 增加額外 16px 緩衝 */
-        }
+        .pt-safe { padding-top: max(1rem, env(safe-area-inset-top)); }
         
         /* 類別按鈕選中樣式 */
         .btn-type-active { background-color: #10b981; color: white; border-color: #10b981; }
