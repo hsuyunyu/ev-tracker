@@ -7,7 +7,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="theme-color" content="#ffffff">
-    <title>養車小幫手</title>
+    <title>電車小幫手 (雲端版)</title>
     
     <!-- 1. Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -39,6 +39,16 @@
     
     <!-- 4. Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- 5. Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Expose Firebase to window for React to use
+        window.firebaseModules = { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch };
+    </script>
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
@@ -191,7 +201,6 @@
             if (r.type === 'tolls') {
                 return r.vendor || '過路費';
             }
-            // 保險、充電或其他，預設顯示廠商，若無則顯示類別名稱
             return r.vendor || typeLabel;
         };
 
@@ -331,6 +340,7 @@
             const handleSubmit = (e) => {
                 e.preventDefault();
                 onSave({
+                    id: editingRecord ? editingRecord.id : undefined, // 確保傳遞 ID
                     type: formData.type,
                     date: formData.date,
                     vendor: (formData.type === 'parking' || formData.type === 'tolls') ? '' : formData.vendor,
@@ -528,7 +538,25 @@
                                     </div>
                                  </div>
 
-                                 <div className="pl-3 grid grid-cols-2 gap-y-1 gap-x-4 text-sm text-gray-600 dark:text-gray-300">
+                                 <div className="pl-3 grid grid-cols-2 gap-y-1 gap-x-4 text-sm text-gray-600 dark:text-gray-300 mt-2">
+                                    {r.user && r.user !== '所有人' && (
+                                        <div className="col-span-1 flex items-center gap-1 text-blue-500 dark:text-blue-400 font-medium">
+                                            <Icon name="user" size={14} /> {r.user}
+                                        </div>
+                                    )}
+                                    
+                                    {r.type === 'charging' && r.kwh && (
+                                        <div className="col-span-1 flex items-center gap-1">
+                                            <Icon name="zap" size={14} className="text-yellow-500" /> {r.kwh} kWh
+                                        </div>
+                                    )}
+
+                                    {r.type !== 'maintenance' && r.mileage && (
+                                        <div className="col-span-1 flex items-center gap-1">
+                                            <Icon name="gauge" size={14} /> {r.mileage} km
+                                        </div>
+                                    )}
+
                                     {r.type === 'maintenance' && (
                                         <>
                                             <div className="col-span-2 flex items-center gap-1 font-medium text-blue-600 dark:text-blue-400">
@@ -572,7 +600,7 @@
             )
         });
 
-        // --- 圖表元件 ---
+        // ---圖表元件 ---
         const BarChart = ({ data }) => {
             if (data.length === 0) return <div className="h-32 flex items-center justify-center text-gray-300">無數據</div>;
             const max = Math.max(...data.map(d => d.cost)) || 1;
@@ -630,8 +658,54 @@
             );
         };
 
+        const LineChart = ({ data, title, yLabel }) => {
+            if (!data || data.length === 0) return <div className="h-32 flex items-center justify-center text-gray-300">無數據</div>;
+            
+            const sortedData = [...data].sort((a, b) => new Date(a.date) - new Date(b.date));
+            const width = 300;
+            const height = 150;
+            const padding = 20;
+            
+            const minVal = Math.min(...sortedData.map(d => d.value));
+            const maxVal = Math.max(...sortedData.map(d => d.value));
+            const range = maxVal - minVal || 1;
+            
+            const getX = (index) => padding + (index / (sortedData.length - 1 || 1)) * (width - 2 * padding);
+            const getY = (value) => height - padding - ((value - minVal) / range) * (height - 2 * padding);
+            
+            const points = sortedData.map((d, i) => `${getX(i)},${getY(d.value)}`).join(' ');
+
+            return (
+                <div className="flex flex-col items-center w-full py-4">
+                    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible">
+                        <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="#e5e7eb" strokeWidth="1" className="dark:stroke-gray-700" />
+                        <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="#e5e7eb" strokeWidth="1" className="dark:stroke-gray-700" />
+                        <polyline fill="none" stroke="#10b981" strokeWidth="2" points={points} />
+                        {sortedData.map((d, i) => (
+                            <g key={i} className="group">
+                                <circle cx={getX(i)} cy={getY(d.value)} r="3" fill="#10b981" className="transition-all group-hover:r-5 cursor-pointer" />
+                                <g className="opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                                    <rect x={Math.min(width - 60, Math.max(0, getX(i) - 30))} y={getY(d.value) - 35} width="60" height="25" rx="4" fill="#1f2937" className="dark:fill-gray-600" />
+                                    <text x={Math.min(width - 60, Math.max(0, getX(i) - 30)) + 30} y={getY(d.value) - 22} textAnchor="middle" fill="white" fontSize="10" fontWeight="bold">
+                                        {d.value} {yLabel}
+                                    </text>
+                                    <text x={Math.min(width - 60, Math.max(0, getX(i) - 30)) + 30} y={getY(d.value) - 13} textAnchor="middle" fill="#9ca3af" fontSize="8">
+                                        {d.date.slice(5, 10)}
+                                    </text>
+                                </g>
+                            </g>
+                        ))}
+                    </svg>
+                    <div className="flex justify-between w-full px-4 text-[10px] text-gray-400 mt-1">
+                        <span>{sortedData[0].date.slice(0, 10)}</span>
+                        <span>{sortedData[sortedData.length - 1].date.slice(0, 10)}</span>
+                    </div>
+                </div>
+            );
+        };
+
         // --- 獨立頁面：車輛列表/設定 ---
-        const VehicleManager = ({ vehicles, setVehicles, defaultVehicleId, setDefaultVehicleId, setSubPage }) => {
+        const VehicleManager = ({ vehicles, onSaveVehicle, onDeleteVehicle, defaultVehicleId, setDefaultVehicleId, setSubPage }) => {
             const [editingId, setEditingId] = useState(null);
             const [editForm, setEditForm] = useState({});
 
@@ -643,21 +717,16 @@
 
             const handleSave = () => {
                 if (editingId) {
-                    if (vehicles.find(v => v.id === editingId)) {
-                        setVehicles(vehicles.map(v => v.id === editingId ? editForm : v));
-                    } else {
-                        setVehicles([...vehicles, editForm]);
-                        if (vehicles.length === 0) setDefaultVehicleId(editForm.id);
-                    }
+                    onSaveVehicle(editForm);
+                    if (vehicles.length === 0) setDefaultVehicleId(editForm.id); // Auto-set default if first
                     setEditingId(null);
                 }
             };
 
             const handleDelete = (id) => {
                 if (confirm('確定刪除此車輛？(不會刪除歷史紀錄)')) {
-                    const newVehicles = vehicles.filter(v => v.id !== id);
-                    setVehicles(newVehicles);
-                    if (defaultVehicleId === id && newVehicles.length > 0) setDefaultVehicleId(newVehicles[0].id);
+                    onDeleteVehicle(id);
+                    if (defaultVehicleId === id) setDefaultVehicleId(null);
                 }
             };
 
@@ -730,12 +799,82 @@
             );
         };
 
+        // --- 獨立頁面：使用者管理 ---
+        const UserManager = ({ users, onUpdateUsers, setSubPage }) => {
+            const [newUserName, setNewUserName] = useState('');
+
+            const handleAddUser = (e) => {
+                e.preventDefault();
+                if (!newUserName.trim()) return;
+                if (users.includes(newUserName.trim())) {
+                    alert('使用者名稱已存在');
+                    return;
+                }
+                onUpdateUsers([...users, newUserName.trim()]);
+                setNewUserName('');
+            };
+
+            const handleDeleteUser = (user) => {
+                if (user === '所有人') return; // 防止刪除系統預設
+                if (confirm(`確定移除使用者「${user}」？`)) {
+                    onUpdateUsers(users.filter(u => u !== user));
+                }
+            };
+
+            return (
+                <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-enter pb-safe flex flex-col">
+                    <header className="bg-white dark:bg-gray-800 sticky top-0 z-20 border-b border-gray-100 dark:border-gray-700 pt-safe px-4 py-4 flex items-center justify-between">
+                        <button onClick={() => setSubPage(null)} className="text-gray-600 dark:text-gray-300 p-1"><Icon name="chevron-left" size={24} /></button>
+                        <h2 className="text-lg font-bold text-gray-800 dark:text-white">使用者管理</h2>
+                        <div className="w-8"></div>
+                    </header>
+                    <div className="p-4 space-y-4">
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                             <h3 className="text-sm font-bold text-gray-800 dark:text-white mb-3">新增使用者</h3>
+                             <form onSubmit={handleAddUser} className="flex gap-2">
+                                <input 
+                                    type="text" 
+                                    value={newUserName}
+                                    onChange={(e) => setNewUserName(e.target.value)}
+                                    placeholder="輸入名稱..."
+                                    className="flex-1 p-3 bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 dark:text-white"
+                                />
+                                <button type="submit" disabled={!newUserName.trim()} className="bg-emerald-600 text-white font-bold px-4 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <Icon name="plus" size={20} />
+                                </button>
+                             </form>
+                        </div>
+
+                        <div className="space-y-2">
+                            <h3 className="text-sm font-bold text-gray-500 dark:text-gray-400 px-2">目前清單</h3>
+                            {users.map(user => (
+                                <div key={user} className="bg-white dark:bg-gray-800 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center">
+                                    <div className="flex items-center gap-3">
+                                        <div className={`p-2 rounded-full ${user==='所有人' ? 'bg-amber-100 text-amber-600' : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-300'}`}>
+                                            <Icon name="user" size={18} />
+                                        </div>
+                                        <span className="font-bold text-gray-800 dark:text-white">{user}</span>
+                                    </div>
+                                    {user !== '所有人' && (
+                                        <button onClick={() => handleDeleteUser(user)} className="text-red-400 p-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                                            <Icon name="trash-2" size={18} />
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         // --- App 主程式 ---
         const App = () => {
+            const { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken, getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } = window.firebaseModules;
+
             const [activeTab, setActiveTab] = useState('home');
             const [subPage, setSubPage] = useState(null); 
             const [records, setRecords] = useState([]);
-            const [isLoaded, setIsLoaded] = useState(false);
             
             // 編輯狀態
             const [editingRecord, setEditingRecord] = useState(null);
@@ -754,6 +893,9 @@
             const [definedUsers, setDefinedUsers] = useState(['所有人', '我', '家人']);
             const [analysisCategories, setAnalysisCategories] = useState(RECORD_TYPES.map(t => t.id));
 
+            // Firebase User
+            const [user, setUser] = useState(null);
+
             // 篩選狀態
             const currentYearStr = new Date().getFullYear().toString();
             const currentMonthStr = new Date().toISOString().slice(0, 7);
@@ -762,87 +904,89 @@
             const [selectedMonth, setSelectedMonth] = useState(currentMonthStr);
             const [customRange, setCustomRange] = useState({ start: '', end: '' });
 
-            // 主題切換
+            // --- Firebase Init & Auth ---
+            const apiKey = ""; 
+        const firebaseConfig = {
+            apiKey: "AIzaSyBFiHBJv0JJPIN9_zLM6hx4s80ldYuN_SU",
+            authDomain: "ev-tracker-119e6.firebaseapp.com",
+            projectId: "ev-tracker-119e6",
+            storageBucket: "ev-tracker-119e6.firebasestorage.app",
+            messagingSenderId: "434539249476",
+            appId: "1:434539249476:web:4e3c4e53b3ec4b0766e111",
+            measurementId: "G-CSCB0M88HG"
+        };
+            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+            
+            const app = useMemo(() => initializeApp(firebaseConfig), []);
+            const auth = useMemo(() => getAuth(app), [app]);
+            const db = useMemo(() => getFirestore(app), [app]);
+
             useEffect(() => {
-                if (theme === 'dark') {
-                    document.documentElement.classList.add('dark');
-                } else {
-                    document.documentElement.classList.remove('dark');
-                }
-                localStorage.setItem('ev_theme', theme);
-            }, [theme]);
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                initAuth();
+                const unsubscribe = onAuthStateChanged(auth, setUser);
+                return () => unsubscribe();
+            }, [auth]);
 
-            const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
-
-            // 初始化與資料遷移
+            // --- Firestore Data Sync ---
+            
+            // Sync Vehicles
             useEffect(() => {
-                const savedRecords = localStorage.getItem('ev_records_db');
-                const savedVehicleSettings = localStorage.getItem('ev_vehicle_settings'); 
-                const savedVehicles = localStorage.getItem('ev_vehicles_list'); 
-                const savedDefaultId = localStorage.getItem('ev_default_vehicle_id');
-                const savedUsers = localStorage.getItem('ev_defined_users');
-                const savedAppSettings = localStorage.getItem('ev_app_settings');
+                if (!user) return;
+                const q = collection(db, 'artifacts', appId, 'users', user.uid, 'vehicles');
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const vs = snapshot.docs.map(d => d.data());
+                    setVehicles(vs);
+                }, (error) => console.error("Sync Vehicles Error:", error));
+                return () => unsubscribe();
+            }, [user, db, appId, activeVehicleId]);
 
-                if (savedAppSettings) {
-                    try {
-                        setAppSettings(JSON.parse(savedAppSettings));
-                    } catch(e) {}
-                }
+            // Sync Records
+            useEffect(() => {
+                if (!user) return;
+                const q = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const rs = snapshot.docs.map(d => d.data());
+                    // Client-side sorting for simple query
+                    rs.sort((a,b) => new Date(b.date) - new Date(a.date));
+                    setRecords(rs);
+                }, (error) => console.error("Sync Records Error:", error));
+                return () => unsubscribe();
+            }, [user, db, appId]);
 
-                let initVehicles = [];
-                let initDefaultId = null;
-
-                if (savedVehicles) {
-                    initVehicles = JSON.parse(savedVehicles);
-                    initDefaultId = savedDefaultId;
-                } else if (savedVehicleSettings) {
-                    const oldSetting = JSON.parse(savedVehicleSettings);
-                    const newId = generateId();
-                    initVehicles = [{ ...oldSetting, id: newId }];
-                    initDefaultId = newId;
-                } else {
-                    const newId = generateId();
-                    initVehicles = [{ id: newId, name: '我的愛車', make: '', model: '' }];
-                    initDefaultId = newId;
-                }
-                
-                setVehicles(initVehicles);
-                setDefaultVehicleId(initDefaultId);
-                setActiveVehicleId(initDefaultId);
-
-                if (savedRecords) {
-                    try {
-                        const parsed = JSON.parse(savedRecords);
-                        if (Array.isArray(parsed)) {
-                            const migrated = parsed.map(r => ({
-                                ...r,
-                                type: r.type || 'charging', 
-                                user: r.user || '所有人',
-                                note: r.note || '',
-                                expiryDate: r.expiryDate || '',
-                                vehicleId: r.vehicleId || initDefaultId 
-                            }));
-                            setRecords(migrated);
+            // Sync Settings (Defined Users, App Settings, Default Vehicle)
+            useEffect(() => {
+                if (!user) return;
+                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                const unsubscribe = onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        if (data.definedUsers) setDefinedUsers(data.definedUsers);
+                        if (data.appSettings) setAppSettings(data.appSettings);
+                        if (data.defaultVehicleId) {
+                            setDefaultVehicleId(data.defaultVehicleId);
+                            // Set active vehicle if not set
+                            setActiveVehicleId(prev => prev || data.defaultVehicleId);
                         }
-                    } catch (e) { console.error(e); }
-                }
-                
-                if (savedUsers) setDefinedUsers(JSON.parse(savedUsers));
-                
-                setIsLoaded(true);
-            }, []);
+                    }
+                }, (error) => console.error("Sync Settings Error:", error));
+                return () => unsubscribe();
+            }, [user, db, appId]);
 
+            // If activeVehicleId is null but vehicles exist, set it (fallback)
             useEffect(() => {
-                if (isLoaded) {
-                    localStorage.setItem('ev_records_db', JSON.stringify(records));
-                    localStorage.setItem('ev_vehicles_list', JSON.stringify(vehicles));
-                    localStorage.setItem('ev_default_vehicle_id', defaultVehicleId);
-                    localStorage.setItem('ev_defined_users', JSON.stringify(definedUsers));
-                    localStorage.setItem('ev_app_settings', JSON.stringify(appSettings));
+                if (!activeVehicleId && vehicles.length > 0) {
+                    setActiveVehicleId(defaultVehicleId || vehicles[0].id);
                 }
-            }, [records, vehicles, defaultVehicleId, definedUsers, appSettings, isLoaded]);
+            }, [vehicles, defaultVehicleId, activeVehicleId]);
 
-            // --- 篩選 ---
+            // --- Data Processing (Memoized) ---
             const vehicleRecords = useMemo(() => {
                 if (!activeVehicleId) return [];
                 return records.filter(r => r.vehicleId === activeVehicleId);
@@ -868,6 +1012,13 @@
                 }
                 return filtered.sort((a,b) => new Date(b.date) - new Date(a.date));
             }, [vehicleRecords, filterMode, selectedYear, selectedMonth, customRange, analysisCategories]);
+
+            const mileageData = useMemo(() => {
+                return vehicleRecords
+                    .filter(r => r.mileage && !isNaN(Number(r.mileage)))
+                    .map(r => ({ date: r.date, value: Number(r.mileage) }))
+                    .sort((a,b) => new Date(a.date) - new Date(b.date));
+            }, [vehicleRecords]);
 
             const getVendorOptions = useCallback((type) => {
                 const targetRecords = vehicleRecords.filter(r => r.type === type);
@@ -997,40 +1148,69 @@
                 })).sort((a, b) => b.cost - a.cost);
             }, [filteredRecords]);
 
-            // --- Handlers ---
-            const handleSaveRecord = useCallback((recordData) => {
-                if (editingRecord) {
-                    setRecords(prev => prev.map(r => r.id === editingRecord.id ? { ...recordData, id: r.id, vehicleId: r.vehicleId } : r).sort((a,b) => new Date(b.date) - new Date(a.date)));
-                    
-                    // 同步更新車輛資料 (如果是保險或里程)
-                    setVehicles(prev => prev.map(v => {
-                        if (v.id === activeVehicleId) {
-                            const updated = { ...v };
-                            if (recordData.mileage) updated.currentMileage = recordData.mileage;
-                            if (recordData.type === 'insurance' && recordData.expiryDate) updated.insuranceDate = recordData.expiryDate;
-                            return updated;
-                        }
-                        return v;
-                    }));
-                    
-                    setEditingRecord(null);
-                } else {
-                    setVehicles(prev => prev.map(v => {
-                        if (v.id === activeVehicleId) {
-                            const updated = { ...v };
-                            if (recordData.mileage) updated.currentMileage = recordData.mileage;
-                            if (recordData.type === 'insurance' && recordData.expiryDate) updated.insuranceDate = recordData.expiryDate;
-                            return updated;
-                        }
-                        return v;
-                    }));
-                    setRecords(prev => [{ ...recordData, id: generateId(), vehicleId: activeVehicleId }, ...prev].sort((a,b) => new Date(b.date) - new Date(a.date)));
-                }
-            }, [activeVehicleId, editingRecord]);
+            // --- Handlers (Firestore Operations) ---
 
-            const handleDelete = useCallback((id) => {
-                if(confirm('確定刪除此紀錄？')) setRecords(prev => prev.filter(r => r.id !== id));
-            }, []);
+            const handleSaveRecord = useCallback(async (recordData) => {
+                if (!user) return;
+                // If editing, recordData.id exists. If new, generateId() was called in form but we can reuse it
+                const rId = recordData.id || generateId();
+                const finalRecord = { ...recordData, id: rId, vehicleId: activeVehicleId };
+                
+                try {
+                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', rId), finalRecord);
+                    
+                    // Update vehicle mileage/insurance if needed
+                    if (recordData.mileage || (recordData.type === 'insurance' && recordData.expiryDate)) {
+                        const currentV = vehicles.find(v => v.id === activeVehicleId);
+                        if (currentV) {
+                            const updatedV = { ...currentV };
+                            if (recordData.mileage) updatedV.currentMileage = recordData.mileage;
+                            if (recordData.type === 'insurance' && recordData.expiryDate) updatedV.insuranceDate = recordData.expiryDate;
+                            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', activeVehicleId), updatedV);
+                        }
+                    }
+                    setEditingRecord(null);
+                } catch (e) {
+                    console.error("Save Record Failed:", e);
+                    alert("儲存失敗，請檢查網路連線");
+                }
+            }, [user, db, appId, activeVehicleId, vehicles]);
+
+            const handleDeleteRecord = useCallback(async (id) => {
+                if (!user || !confirm('確定刪除此紀錄？')) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', id));
+                } catch (e) {
+                    console.error("Delete Record Failed:", e);
+                }
+            }, [user, db, appId]);
+
+            const handleSaveVehicle = useCallback(async (vehicleData) => {
+                if (!user) return;
+                try {
+                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', vehicleData.id), vehicleData);
+                } catch (e) { console.error("Save Vehicle Failed:", e); }
+            }, [user, db, appId]);
+
+            const handleDeleteVehicle = useCallback(async (id) => {
+                if (!user) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', id));
+                } catch (e) { console.error("Delete Vehicle Failed:", e); }
+            }, [user, db, appId]);
+
+            const updateSettingsDoc = async (newData) => {
+                if (!user) return;
+                try {
+                    // Merge with existing
+                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                    await setDoc(docRef, newData, { merge: true });
+                } catch (e) { console.error("Update Settings Failed:", e); }
+            };
+
+            const handleUpdateUsers = (newUsers) => updateSettingsDoc({ definedUsers: newUsers });
+            const handleUpdateAppSettings = (newSettings) => updateSettingsDoc({ appSettings: newSettings });
+            const handleUpdateDefaultVehicle = (vId) => updateSettingsDoc({ defaultVehicleId: vId });
 
             const onEditClick = (record) => {
                 setEditingRecord(record);
@@ -1059,35 +1239,107 @@
                 const file = e.target.files[0];
                 if (!file) return;
                 const reader = new FileReader();
-                reader.onload = (ev) => {
+                reader.onload = async (ev) => {
                     try {
                         const data = JSON.parse(ev.target.result);
-                        if (data.records && Array.isArray(data.records)) {
-                            if(confirm(`找到 ${data.records.length} 筆資料，確定還原？`)) {
-                                setRecords(data.records);
-                                if(data.vehicles) {
-                                    setVehicles(data.vehicles);
-                                    // 修正: 還原後嘗試切換到預設車輛，若無則切換到第一台
-                                    const newActiveId = data.defaultVehicleId || (data.vehicles.length > 0 ? data.vehicles[0].id : null);
-                                    if (newActiveId) {
-                                        setDefaultVehicleId(newActiveId);
-                                        setActiveVehicleId(newActiveId);
-                                    }
-                                }
-                                if(data.definedUsers) setDefinedUsers(data.definedUsers);
-                                alert('還原成功！');
+                        if (!user) { alert("請先登入 (資料載入中...)"); return; }
+                        
+                        if (confirm(`即將匯入資料至雲端，這可能需要一點時間。確定？`)) {
+                            // Batch writes (limit 500 per batch, simple implement here loop)
+                            // Ideally use writeBatch
+                            const batch = writeBatch(db);
+                            let opCount = 0;
+                            
+                            // Records
+                            if (Array.isArray(data.records)) {
+                                data.records.forEach(r => {
+                                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'records', r.id || generateId());
+                                    batch.set(ref, { ...r, type: r.type || 'charging', user: r.user||'所有人', note: r.note||'', vehicleId: r.vehicleId || (data.defaultVehicleId || vehicles[0]?.id) });
+                                    opCount++;
+                                });
                             }
-                        } else if (Array.isArray(data)) {
-                            if(confirm(`找到 ${data.length} 筆資料(舊格式)，確定還原？`)) {
-                                const migrated = data.map(r => ({ ...r, type: r.type || 'charging', user: r.user||'所有人', note: r.note||'' }));
-                                setRecords(migrated);
-                                alert('還原成功！');
+                            // Vehicles
+                            if (Array.isArray(data.vehicles)) {
+                                data.vehicles.forEach(v => {
+                                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', v.id);
+                                    batch.set(ref, v);
+                                    opCount++;
+                                });
                             }
+                            // Settings
+                            if (data.definedUsers || data.defaultVehicleId) {
+                                const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                                batch.set(ref, { 
+                                    definedUsers: data.definedUsers || definedUsers,
+                                    defaultVehicleId: data.defaultVehicleId || defaultVehicleId 
+                                }, { merge: true });
+                                opCount++;
+                            }
+
+                            if (opCount > 0) await batch.commit();
+                            alert(`成功匯入 ${opCount} 筆操作！`);
                         }
-                    } catch(err) { alert('檔案格式錯誤'); }
+                    } catch(err) { 
+                        console.error(err);
+                        alert('匯入失敗：' + err.message); 
+                    }
                 };
                 reader.readAsText(file);
                 e.target.value = '';
+            };
+
+            // LocalStorage Migration Tool
+            const handleMigrateFromLocal = async () => {
+                if (!user) return;
+                const savedRecords = localStorage.getItem('ev_records_db');
+                const savedVehicles = localStorage.getItem('ev_vehicles_list'); 
+                const savedDefaultId = localStorage.getItem('ev_default_vehicle_id');
+                const savedUsers = localStorage.getItem('ev_defined_users');
+                
+                if (!savedRecords && !savedVehicles) {
+                    alert("本機沒有發現舊資料！");
+                    return;
+                }
+
+                if (!confirm("確定將本機資料上傳至雲端？(不會覆蓋現有雲端資料，僅新增)")) return;
+
+                const batch = writeBatch(db);
+                let count = 0;
+
+                try {
+                    if (savedVehicles) {
+                        const vs = JSON.parse(savedVehicles);
+                        vs.forEach(v => {
+                            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', v.id);
+                            batch.set(ref, v);
+                            count++;
+                        });
+                    }
+                    if (savedRecords) {
+                        const rs = JSON.parse(savedRecords);
+                        rs.forEach(r => {
+                            // Ensure ID exists
+                            const rid = r.id || generateId();
+                            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'records', rid);
+                            batch.set(ref, { ...r, id: rid });
+                            count++;
+                        });
+                    }
+                    const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                    const settingsUpdate = {};
+                    if (savedDefaultId) settingsUpdate.defaultVehicleId = savedDefaultId;
+                    if (savedUsers) settingsUpdate.definedUsers = JSON.parse(savedUsers);
+                    if (Object.keys(settingsUpdate).length > 0) {
+                        batch.set(settingsRef, settingsUpdate, { merge: true });
+                        count++;
+                    }
+
+                    await batch.commit();
+                    alert(`成功上傳 ${count} 筆資料！建議之後清除本機資料以免混淆。`);
+                } catch (e) {
+                    console.error(e);
+                    alert("上傳失敗: " + e.message);
+                }
             };
 
             const handleExportCSV = () => {
@@ -1107,18 +1359,37 @@
                 document.body.removeChild(a);
             };
 
-            const addUser = () => {
-                const name = prompt("請輸入使用者名稱：");
-                if (name && !definedUsers.includes(name)) setDefinedUsers([...definedUsers, name]);
-            };
-            const removeUser = (name) => {
-                if (confirm('確定移除？')) setDefinedUsers(definedUsers.filter(u => u !== name));
-            };
+            // 主題切換 (Local only preference)
+            useEffect(() => {
+                if (theme === 'dark') {
+                    document.documentElement.classList.add('dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                }
+                localStorage.setItem('ev_theme', theme);
+            }, [theme]);
+
+            const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
 
             // --- 畫面渲染 ---
             const renderContent = () => {
                 if (subPage === 'vehicleSettings') {
-                    return <VehicleManager vehicles={vehicles} setVehicles={setVehicles} defaultVehicleId={defaultVehicleId} setDefaultVehicleId={setDefaultVehicleId} setSubPage={setSubPage} />;
+                    return <VehicleManager 
+                        vehicles={vehicles} 
+                        onSaveVehicle={handleSaveVehicle}
+                        onDeleteVehicle={handleDeleteVehicle}
+                        defaultVehicleId={defaultVehicleId} 
+                        setDefaultVehicleId={handleUpdateDefaultVehicle} 
+                        setSubPage={setSubPage} 
+                    />;
+                }
+
+                if (subPage === 'userSettings') {
+                    return <UserManager 
+                        users={definedUsers} 
+                        onUpdateUsers={handleUpdateUsers}
+                        setSubPage={setSubPage} 
+                    />;
                 }
 
                 if (activeTab === 'home') return (
@@ -1133,15 +1404,15 @@
                         />
                         <div>
                             <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-3 px-1">
-                                {vehicles.find(v => v.id === activeVehicleId)?.name} 的最近紀錄
+                                {vehicles.find(v => v.id === activeVehicleId)?.name || '未選擇車輛'} 的最近紀錄
                             </h3>
-                            <RecordList records={vehicleRecords.slice(0, appSettings.recentLimit)} onDelete={handleDelete} onEdit={onEditClick} />
+                            <RecordList records={vehicleRecords.slice(0, appSettings.recentLimit)} onDelete={handleDeleteRecord} onEdit={onEditClick} />
                         </div>
                     </div>
                 );
 
                 if (activeTab === 'history') return (
-                    <HistoryPage records={vehicleRecords} onDelete={handleDelete} onEdit={onEditClick} />
+                    <HistoryPage records={vehicleRecords} onDelete={handleDeleteRecord} onEdit={onEditClick} />
                 );
 
                 if (activeTab === 'dashboard') return (
@@ -1196,11 +1467,17 @@
                             <h3 className="font-bold text-gray-800 dark:text-white mb-2 text-sm flex items-center gap-2"><Icon name="bar-chart-3" className="text-emerald-500" /> 花費趨勢</h3>
                             <BarChart data={trendStats} />
                         </div>
+
+                        <div className="bg-white dark:bg-gray-800 p-5 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-2 text-sm flex items-center gap-2"><Icon name="activity" className="text-emerald-500" /> 里程與日期趨勢</h3>
+                            <LineChart data={mileageData} yLabel="km" />
+                        </div>
                     </div>
                 );
 
                 if (activeTab === 'settings') return (
                     <div className="space-y-6 animate-fade-in pb-24">
+                        {/* 車輛設定 */}
                         <div 
                             className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center cursor-pointer active:scale-[0.98] transition-all hover:bg-gray-50 dark:hover:bg-gray-700"
                             onClick={() => setSubPage('vehicleSettings')}
@@ -1213,6 +1490,27 @@
                                     <h3 className="font-bold text-gray-800 dark:text-white text-sm">車輛管理</h3>
                                     <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                                         管理 {vehicles.length} 台車輛設定
+                                    </p>
+                                </div>
+                            </div>
+                            <div className="text-gray-300">
+                                <Icon name="chevron-right" size={20} />
+                            </div>
+                        </div>
+
+                        {/* 使用者設定 (新) */}
+                        <div 
+                            className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center cursor-pointer active:scale-[0.98] transition-all hover:bg-gray-50 dark:hover:bg-gray-700"
+                            onClick={() => setSubPage('userSettings')}
+                        >
+                            <div className="flex items-center gap-3">
+                                <div className="p-3 bg-purple-50 dark:bg-purple-900/30 rounded-xl text-purple-600 dark:text-purple-400">
+                                    <Icon name="users" size={24} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-gray-800 dark:text-white text-sm">使用者管理</h3>
+                                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                                        管理 {definedUsers.length} 位使用者
                                     </p>
                                 </div>
                             </div>
@@ -1255,7 +1553,7 @@
                                         step="1" 
                                         className="w-32 h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer"
                                         value={appSettings.recentLimit} 
-                                        onChange={e => setAppSettings({...appSettings, recentLimit: Number(e.target.value)})}
+                                        onChange={e => handleUpdateAppSettings({...appSettings, recentLimit: Number(e.target.value)})}
                                     />
                                     <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400 w-6 text-center">{appSettings.recentLimit}</span>
                                 </div>
@@ -1263,25 +1561,13 @@
                         </div>
 
                         <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
-                            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="users" className="text-emerald-500" /> 使用者管理</h3>
-                            <div className="flex flex-wrap gap-2 mb-4">
-                                {definedUsers.map(user => (
-                                    <span key={user} className="bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 px-3 py-1.5 rounded-lg text-sm flex items-center gap-2">
-                                        {user}
-                                        {user !== '所有人' && <button onClick={() => removeUser(user)} className="text-gray-400 hover:text-red-500">×</button>}
-                                    </span>
-                                ))}
-                                <button onClick={addUser} className="bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400 px-3 py-1.5 rounded-lg text-sm font-bold border border-emerald-100 dark:border-emerald-800 flex items-center gap-1 hover:bg-emerald-100 dark:hover:bg-emerald-900/40">
-                                    <Icon name="plus" size={14} /> 新增
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
-                            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="cloud" className="text-emerald-500" /> 資料備份與還原</h3>
-                            <div className="flex gap-2">
-                                <button onClick={handleBackup} className="flex-1 bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-200 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-600"><Icon name="download-cloud" size={18} /> 備份</button>
-                                <div className="relative flex-1"><input type="file" id="restoreFile" accept=".json" className="hidden" onChange={handleRestore} /><button onClick={() => document.getElementById('restoreFile').click()} className="w-full h-full border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700"><Icon name="upload-cloud" size={18} /> 還原</button></div>
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-4 flex items-center gap-2"><Icon name="cloud" className="text-emerald-500" /> 雲端同步</h3>
+                            <div className="space-y-2">
+                                <div className="flex gap-2">
+                                    <button onClick={handleBackup} className="flex-1 bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-200 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-600"><Icon name="download-cloud" size={18} /> 備份 (JSON)</button>
+                                    <div className="relative flex-1"><input type="file" id="restoreFile" accept=".json" className="hidden" onChange={handleRestore} /><button onClick={() => document.getElementById('restoreFile').click()} className="w-full h-full border border-gray-200 dark:border-gray-600 text-gray-600 dark:text-gray-300 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-gray-50 dark:hover:bg-gray-700"><Icon name="upload-cloud" size={18} /> 還原 (JSON)</button></div>
+                                </div>
+                                <button onClick={handleMigrateFromLocal} className="w-full bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 font-bold py-3 rounded-xl flex justify-center items-center gap-2 hover:bg-emerald-100 dark:hover:bg-emerald-900/50"><Icon name="database" size={18} /> 匯入本機舊資料 (Migration)</button>
                             </div>
                         </div>
                         
@@ -1297,7 +1583,7 @@
                     <header className={`bg-white/80 dark:bg-gray-800/80 backdrop-blur-md sticky top-0 z-20 border-b border-gray-100 dark:border-gray-700 pt-safe px-6 py-4 flex justify-between items-center ${subPage ? 'hidden' : ''}`}>
                         <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400">
                             <Icon name="car" fill="currentColor" className="text-emerald-500" />
-                            <h1 className="text-xl font-bold text-gray-800 dark:text-white tracking-tight">養車小幫手</h1>
+                            <h1 className="text-xl font-bold text-gray-800 dark:text-white tracking-tight">電車小幫手</h1>
                         </div>
                         <div className="relative">
                             <select 
