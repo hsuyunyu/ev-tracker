@@ -340,7 +340,7 @@
             const handleSubmit = (e) => {
                 e.preventDefault();
                 onSave({
-                    id: editingRecord ? editingRecord.id : undefined, // 確保傳遞 ID
+                    id: editingRecord ? editingRecord.id : undefined, 
                     type: formData.type,
                     date: formData.date,
                     vendor: (formData.type === 'parking' || formData.type === 'tolls') ? '' : formData.vendor,
@@ -895,6 +895,9 @@
 
             // Firebase User
             const [user, setUser] = useState(null);
+            // Sync ID
+            const [syncId, setSyncId] = useState(localStorage.getItem('ev_sync_id') || '');
+            const [inputSyncId, setInputSyncId] = useState('');
 
             // 篩選狀態
             const currentYearStr = new Date().getFullYear().toString();
@@ -934,36 +937,51 @@
                 return () => unsubscribe();
             }, [auth]);
 
+            // Helper for dynamic paths
+            const getCollectionRef = useCallback((collName) => {
+                if (syncId) {
+                    return collection(db, 'artifacts', appId, 'public', 'data', `u_${syncId}_${collName}`);
+                }
+                return collection(db, 'artifacts', appId, 'users', user.uid, collName);
+            }, [db, appId, user, syncId]);
+
+            const getDocRef = useCallback((collName, docId) => {
+                if (syncId) {
+                    return doc(db, 'artifacts', appId, 'public', 'data', `u_${syncId}_${collName}`, docId);
+                }
+                return doc(db, 'artifacts', appId, 'users', user.uid, collName, docId);
+            }, [db, appId, user, syncId]);
+
             // --- Firestore Data Sync ---
             
             // Sync Vehicles
             useEffect(() => {
                 if (!user) return;
-                const q = collection(db, 'artifacts', appId, 'users', user.uid, 'vehicles');
+                const q = getCollectionRef('vehicles');
                 const unsubscribe = onSnapshot(q, (snapshot) => {
                     const vs = snapshot.docs.map(d => d.data());
                     setVehicles(vs);
                 }, (error) => console.error("Sync Vehicles Error:", error));
                 return () => unsubscribe();
-            }, [user, db, appId, activeVehicleId]);
+            }, [user, getCollectionRef]);
 
             // Sync Records
             useEffect(() => {
                 if (!user) return;
-                const q = collection(db, 'artifacts', appId, 'users', user.uid, 'records');
+                const q = getCollectionRef('records');
                 const unsubscribe = onSnapshot(q, (snapshot) => {
                     const rs = snapshot.docs.map(d => d.data());
-                    // Client-side sorting for simple query
                     rs.sort((a,b) => new Date(b.date) - new Date(a.date));
                     setRecords(rs);
                 }, (error) => console.error("Sync Records Error:", error));
                 return () => unsubscribe();
-            }, [user, db, appId]);
+            }, [user, getCollectionRef]);
 
             // Sync Settings (Defined Users, App Settings, Default Vehicle)
             useEffect(() => {
                 if (!user) return;
-                const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                // Settings structure slightly different for public path to keep it simple, treat 'settings' as a collection with 'preferences' doc
+                const docRef = getDocRef('settings', 'preferences');
                 const unsubscribe = onSnapshot(docRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
@@ -971,13 +989,12 @@
                         if (data.appSettings) setAppSettings(data.appSettings);
                         if (data.defaultVehicleId) {
                             setDefaultVehicleId(data.defaultVehicleId);
-                            // Set active vehicle if not set
                             setActiveVehicleId(prev => prev || data.defaultVehicleId);
                         }
                     }
                 }, (error) => console.error("Sync Settings Error:", error));
                 return () => unsubscribe();
-            }, [user, db, appId]);
+            }, [user, getDocRef]);
 
             // If activeVehicleId is null but vehicles exist, set it (fallback)
             useEffect(() => {
@@ -1150,23 +1167,28 @@
 
             // --- Handlers (Firestore Operations) ---
 
+            const handleSetSyncId = () => {
+                const val = inputSyncId.trim();
+                setSyncId(val);
+                localStorage.setItem('ev_sync_id', val);
+                alert(val ? `已切換至同步 ID: ${val}` : '已切換回私人模式');
+            };
+
             const handleSaveRecord = useCallback(async (recordData) => {
                 if (!user) return;
-                // If editing, recordData.id exists. If new, generateId() was called in form but we can reuse it
                 const rId = recordData.id || generateId();
                 const finalRecord = { ...recordData, id: rId, vehicleId: activeVehicleId };
                 
                 try {
-                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', rId), finalRecord);
+                    await setDoc(getDocRef('records', rId), finalRecord);
                     
-                    // Update vehicle mileage/insurance if needed
                     if (recordData.mileage || (recordData.type === 'insurance' && recordData.expiryDate)) {
                         const currentV = vehicles.find(v => v.id === activeVehicleId);
                         if (currentV) {
                             const updatedV = { ...currentV };
                             if (recordData.mileage) updatedV.currentMileage = recordData.mileage;
                             if (recordData.type === 'insurance' && recordData.expiryDate) updatedV.insuranceDate = recordData.expiryDate;
-                            await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', activeVehicleId), updatedV);
+                            await setDoc(getDocRef('vehicles', activeVehicleId), updatedV);
                         }
                     }
                     setEditingRecord(null);
@@ -1174,36 +1196,35 @@
                     console.error("Save Record Failed:", e);
                     alert("儲存失敗，請檢查網路連線");
                 }
-            }, [user, db, appId, activeVehicleId, vehicles]);
+            }, [user, getDocRef, activeVehicleId, vehicles]);
 
             const handleDeleteRecord = useCallback(async (id) => {
                 if (!user || !confirm('確定刪除此紀錄？')) return;
                 try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'records', id));
+                    await deleteDoc(getDocRef('records', id));
                 } catch (e) {
                     console.error("Delete Record Failed:", e);
                 }
-            }, [user, db, appId]);
+            }, [user, getDocRef]);
 
             const handleSaveVehicle = useCallback(async (vehicleData) => {
                 if (!user) return;
                 try {
-                    await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', vehicleData.id), vehicleData);
+                    await setDoc(getDocRef('vehicles', vehicleData.id), vehicleData);
                 } catch (e) { console.error("Save Vehicle Failed:", e); }
-            }, [user, db, appId]);
+            }, [user, getDocRef]);
 
             const handleDeleteVehicle = useCallback(async (id) => {
                 if (!user) return;
                 try {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', id));
+                    await deleteDoc(getDocRef('vehicles', id));
                 } catch (e) { console.error("Delete Vehicle Failed:", e); }
-            }, [user, db, appId]);
+            }, [user, getDocRef]);
 
             const updateSettingsDoc = async (newData) => {
                 if (!user) return;
                 try {
-                    // Merge with existing
-                    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                    const docRef = getDocRef('settings', 'preferences');
                     await setDoc(docRef, newData, { merge: true });
                 } catch (e) { console.error("Update Settings Failed:", e); }
             };
@@ -1244,16 +1265,14 @@
                         const data = JSON.parse(ev.target.result);
                         if (!user) { alert("請先登入 (資料載入中...)"); return; }
                         
-                        if (confirm(`即將匯入資料至雲端，這可能需要一點時間。確定？`)) {
-                            // Batch writes (limit 500 per batch, simple implement here loop)
-                            // Ideally use writeBatch
+                        if (confirm(`即將匯入資料至目前的 ${syncId ? '公開同步區' : '私人區'}，這可能需要一點時間。確定？`)) {
                             const batch = writeBatch(db);
                             let opCount = 0;
                             
                             // Records
                             if (Array.isArray(data.records)) {
                                 data.records.forEach(r => {
-                                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'records', r.id || generateId());
+                                    const ref = getDocRef('records', r.id || generateId());
                                     batch.set(ref, { ...r, type: r.type || 'charging', user: r.user||'所有人', note: r.note||'', vehicleId: r.vehicleId || (data.defaultVehicleId || vehicles[0]?.id) });
                                     opCount++;
                                 });
@@ -1261,14 +1280,14 @@
                             // Vehicles
                             if (Array.isArray(data.vehicles)) {
                                 data.vehicles.forEach(v => {
-                                    const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', v.id);
+                                    const ref = getDocRef('vehicles', v.id);
                                     batch.set(ref, v);
                                     opCount++;
                                 });
                             }
                             // Settings
                             if (data.definedUsers || data.defaultVehicleId) {
-                                const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                                const ref = getDocRef('settings', 'preferences');
                                 batch.set(ref, { 
                                     definedUsers: data.definedUsers || definedUsers,
                                     defaultVehicleId: data.defaultVehicleId || defaultVehicleId 
@@ -1301,7 +1320,7 @@
                     return;
                 }
 
-                if (!confirm("確定將本機資料上傳至雲端？(不會覆蓋現有雲端資料，僅新增)")) return;
+                if (!confirm("確定將本機資料上傳？")) return;
 
                 const batch = writeBatch(db);
                 let count = 0;
@@ -1310,7 +1329,7 @@
                     if (savedVehicles) {
                         const vs = JSON.parse(savedVehicles);
                         vs.forEach(v => {
-                            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'vehicles', v.id);
+                            const ref = getDocRef('vehicles', v.id);
                             batch.set(ref, v);
                             count++;
                         });
@@ -1318,14 +1337,13 @@
                     if (savedRecords) {
                         const rs = JSON.parse(savedRecords);
                         rs.forEach(r => {
-                            // Ensure ID exists
                             const rid = r.id || generateId();
-                            const ref = doc(db, 'artifacts', appId, 'users', user.uid, 'records', rid);
+                            const ref = getDocRef('records', rid);
                             batch.set(ref, { ...r, id: rid });
                             count++;
                         });
                     }
-                    const settingsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'preferences');
+                    const settingsRef = getDocRef('settings', 'preferences');
                     const settingsUpdate = {};
                     if (savedDefaultId) settingsUpdate.defaultVehicleId = savedDefaultId;
                     if (savedUsers) settingsUpdate.definedUsers = JSON.parse(savedUsers);
@@ -1335,7 +1353,7 @@
                     }
 
                     await batch.commit();
-                    alert(`成功上傳 ${count} 筆資料！建議之後清除本機資料以免混淆。`);
+                    alert(`成功上傳 ${count} 筆資料！`);
                 } catch (e) {
                     console.error(e);
                     alert("上傳失敗: " + e.message);
@@ -1477,6 +1495,62 @@
 
                 if (activeTab === 'settings') return (
                     <div className="space-y-6 animate-fade-in pb-24">
+                        {/* 帳號資訊 (新增區塊) */}
+                        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700">
+                            <h3 className="font-bold text-gray-800 dark:text-white mb-3 flex items-center gap-2">
+                                <Icon name="user-check" className="text-blue-500" /> 帳號資訊
+                            </h3>
+                            <div className="space-y-3">
+                                <div className="text-sm text-gray-600 dark:text-gray-300">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span>登入狀態：</span>
+                                        <span className="font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30 px-2 py-0.5 rounded text-xs">{user ? '匿名登入中' : '未登入'}</span>
+                                    </div>
+                                    {user && (
+                                        <div className="flex justify-between items-center bg-gray-50 dark:bg-gray-700/50 p-2 rounded-lg">
+                                            <span className="text-xs text-gray-500 dark:text-gray-400 font-mono truncate max-w-[200px]">{user.uid}</span>
+                                            <button 
+                                                onClick={() => { navigator.clipboard.writeText(user.uid); alert('ID 已複製'); }}
+                                                className="text-gray-500 hover:text-blue-500 p-1"
+                                                title="複製 ID"
+                                            >
+                                                <Icon name="copy" size={14} />
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                <div className="border-t border-gray-100 dark:border-gray-700 pt-3 mt-3">
+                                    <h4 className="text-sm font-bold text-gray-800 dark:text-white mb-2">跨裝置同步設定</h4>
+                                    <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                                        若需在不同裝置共用資料，請輸入相同的代碼。
+                                        <br/><span className="text-amber-500 font-bold">注意：此模式下的資料為公開可讀，請設定複雜的代碼。</span>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <input 
+                                            type="text" 
+                                            placeholder="輸入同步代碼..."
+                                            className="flex-1 p-2 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg text-sm dark:text-white"
+                                            value={inputSyncId}
+                                            onChange={(e) => setInputSyncId(e.target.value)}
+                                        />
+                                        <button 
+                                            onClick={handleSetSyncId}
+                                            className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold"
+                                        >
+                                            設定
+                                        </button>
+                                    </div>
+                                    {syncId && (
+                                        <div className="mt-2 text-xs bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 p-2 rounded-lg flex justify-between items-center">
+                                            <span>目前使用同步代碼：<b>{syncId}</b></span>
+                                            <button onClick={() => { setSyncId(''); setInputSyncId(''); localStorage.removeItem('ev_sync_id'); alert('已切換回私人模式'); }} className="text-red-500 hover:underline">清除</button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
                         {/* 車輛設定 */}
                         <div 
                             className="bg-white dark:bg-gray-800 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-700 flex justify-between items-center cursor-pointer active:scale-[0.98] transition-all hover:bg-gray-50 dark:hover:bg-gray-700"
